@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-10 after v1.2 milestone)
 
 Phase: v1.2 complete
 Status: Milestone shipped — ready for next milestone planning
-Last activity: 2026-04-21 - Completed quick task 260420-t2v: Improve SSE status granularity in /stream/agentic endpoint
+Last activity: 2026-04-22 - Completed quick task 260421-uma: Set up Sentry SDK for error tracking and structured logging
 
 Progress: [██████████] 100%  (5/5 phases, 9/9 plans complete)
 
@@ -60,9 +60,10 @@ None.
 | # | Description | Date | Commit | Status | Directory |
 |---|-------------|------|--------|--------|-----------|
 | 260420-t2v | Improve SSE status granularity in /stream/agentic endpoint | 2026-04-21 | 54c8418 | Verified | [260420-t2v-improve-sse-status-granularity-in-stream](./quick/260420-t2v-improve-sse-status-granularity-in-stream/) |
+| 260421-uma | Set up Sentry SDK for error tracking and structured logging | 2026-04-22 | fe61762 | Complete | [260421-uma-set-up-sentry-sdk-for-error-tracking-and](./quick/260421-uma-set-up-sentry-sdk-for-error-tracking-and/) |
 
 ## Session Continuity
 
-Last session: 2026-04-10
-Stopped at: v1.2 milestone archived
+Last session: 2026-04-22
+Stopped at: Completed quick task 260421-uma: Sentry SDK setup
 Next action: /gsd:new-milestone — start next milestone planning
