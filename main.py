@@ -97,6 +97,7 @@ async def catch_exceptions_mw(request: Request, call_next):
     except Exception as e:
         tb = traceback.format_exc()
         print("\n===== SERVER EXCEPTION =====\n", tb, "\n============================\n")
+        sentry_sdk.capture_exception(e)
         return JSONResponse(status_code=500, content={"detail": "internal_error", "error": str(e)})
 
 from sqlalchemy import text
