@@ -10,8 +10,17 @@ from api import onboarding
 from api import primers
 from models.JWTBearer import JWTBearer
 from core.auth import jwks
-from core.config import validate_supabase_config
+from core.config import validate_supabase_config, SENTRY_DSN
 import os
+import sentry_sdk
+
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        send_default_pii=True,
+        enable_logs=True,
+        environment=os.getenv("ENV", "development"),
+    )
 
 from db.session import engine, Base          # for optional table bootstrap
 from db.routers import (
@@ -114,3 +123,9 @@ from fastapi.routing import APIRoute
 @app.get("/_routes")
 def _routes():
     return [{"path": r.path, "methods": list(r.methods)} for r in app.routes if isinstance(r, APIRoute)]
+
+if os.getenv("ENV", "development") == "development":
+    @app.get("/sentry-debug", tags=["Debug"])
+    def trigger_sentry_error():
+        """Dev-only endpoint to verify Sentry error capture is working."""
+        division_by_zero = 1 / 0
