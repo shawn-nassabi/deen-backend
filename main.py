@@ -18,8 +18,8 @@ if SENTRY_DSN:
     sentry_sdk.init(
         dsn=SENTRY_DSN,
         send_default_pii=True,
-        enable_logs=True,
         environment=os.getenv("ENV", "development"),
+        _experiments={"enable_logs": True},
     )
 
 from db.session import engine, Base          # for optional table bootstrap
