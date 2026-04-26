@@ -90,12 +90,13 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.2 shipped 2026-04-10** — Pipeline fully migrated from OpenAI to Anthropic Claude + HuggingFace.
+**v1.3 in progress (Phase 13 complete 2026-04-26)** — Sentry infrastructure foundation shipped.
 
-- 12 phases, 24 plans across 3 milestones
-- Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace
-- Zero OpenAI dependencies in application code
-- All 23 v1.2 requirements satisfied
+- 13 phases, 26 plans across 4 milestones
+- Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
+- Phase 13 complete: `core/sentry.py` (SDK init gate), `core/context.py` (correlation_id ContextVar), `core/middleware.py` (CorrelationIdMiddleware), wired into `main.py`
+- sentry-sdk upgraded to 2.35.2 — Sentry Logs enabled via top-level `enable_logs=True`
+- Next: Phase 14 route-layer instrumentation
 
 **Known tech debt (non-blocking):**
 - Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run in CI — runtime environment confirmation only
