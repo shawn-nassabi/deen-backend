@@ -38,12 +38,11 @@ if SENTRY_ENABLED and SENTRY_DSN:
             LoggingIntegration(
                 level=logging.INFO,           # breadcrumbs threshold
                 event_level=logging.ERROR,    # error event threshold
-                sentry_logs_level=logging.INFO,  # Sentry Logs threshold (valid at 2.27.0)
+                sentry_logs_level=logging.INFO,  # Sentry Logs threshold
             )
         ],
         before_send=_scrub_pii,
-        # _experiments required at sentry-sdk 2.27.0 — top-level enable_logs only valid at >= 2.35.0
-        _experiments={"enable_logs": True},
+        enable_logs=True,
     )
 
 
