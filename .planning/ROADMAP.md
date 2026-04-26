@@ -70,7 +70,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 **Plans**: 2 plans
 
 Plans:
-- [ ] 13-01-PLAN.md — Create core/context.py, core/middleware.py, core/sentry.py (new infrastructure modules)
+- [x] 13-01-PLAN.md — Create core/context.py, core/middleware.py, core/sentry.py (new infrastructure modules)
 - [ ] 13-02-PLAN.md — Wire new modules into main.py (replace sentry init, register middleware, refactor catch_exceptions_mw)
 
 ### Phase 14: Route Layer Instrumentation
@@ -123,7 +123,7 @@ Plans:
 | 10. Embedding Migration | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 11. Dead Code Cleanup | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
-| 13. Sentry Infrastructure | v1.3 | 0/2 | Not started | - |
+| 13. Sentry Infrastructure | v1.3 | 1/2 | In Progress|  |
 | 14. Route Layer Instrumentation | v1.3 | 0/? | Not started | - |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 0/? | Not started | - |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/? | Not started | - |
