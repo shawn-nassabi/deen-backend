@@ -10,17 +10,10 @@ from api import onboarding
 from api import primers
 from models.JWTBearer import JWTBearer
 from core.auth import jwks
-from core.config import validate_supabase_config, SENTRY_DSN
+from core.config import validate_supabase_config
+import core.sentry  # side-effect: initializes Sentry SDK when SENTRY_ENABLED=true AND SENTRY_DSN set
+from core.sentry import SENTRY_ENABLED
 import os
-import sentry_sdk
-
-if SENTRY_DSN:
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        send_default_pii=True,
-        environment=os.getenv("ENV", "development"),
-        _experiments={"enable_logs": True},
-    )
 
 from db.session import engine, Base          # for optional table bootstrap
 from db.routers import (
@@ -64,6 +57,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from core.middleware import CorrelationIdMiddleware
+app.add_middleware(CorrelationIdMiddleware)  # registered after CORS → runs first (insert(0) semantics)
 
 # API routers
 # app.include_router(reference.ref_router,dependencies=[Depends(auth)])
