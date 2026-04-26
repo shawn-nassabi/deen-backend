@@ -83,8 +83,10 @@ app.include_router(primers.primers_router)          # /primers
 
 
 import logging
+import sentry_sdk
 from fastapi.responses import JSONResponse
 from fastapi.requests import Request
+from core.config import ENV
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +101,13 @@ async def catch_exceptions_mw(request: Request, call_next):
             extra={"path": str(request.url.path)},
         )
         if SENTRY_ENABLED:
-            return JSONResponse(status_code=500, content={"detail": "internal_error"})
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "internal_error", "error": str(e)},
-        )
+            sentry_sdk.capture_exception(e)
+        if ENV == "development":
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "internal_error", "error": str(e)},
+            )
+        return JSONResponse(status_code=500, content={"detail": "internal_error"})
 
 from sqlalchemy import text
 from db.session import engine
