@@ -10,11 +10,11 @@
 
 ### INFRA — Sentry Configuration & Infrastructure
 
-- [ ] **INFRA-01**: System sends zero data to Sentry when `SENTRY_ENABLED` is `false` or unset — local dev never triggers Sentry events
-- [ ] **INFRA-02**: `main.py` initializes Sentry only when both `SENTRY_ENABLED=true` AND `SENTRY_DSN` are set; `LoggingIntegration(level=INFO, event_level=ERROR, sentry_logs_level=INFO)` is explicitly configured in `sentry_sdk.init()`
-- [ ] **INFRA-03**: Every HTTP request carries a unique `correlation_id` UUID; all log events from that request include it — enabling full request-chain filtering in Sentry
-- [ ] **INFRA-04**: Sentry events for a request include `session_id`, `user_id` (when authenticated), and `endpoint` as searchable tags on the per-request isolation scope
-- [ ] **INFRA-05**: `send_default_pii=True` removed; a `before_send` hook redacts `user_query` and request body content from Sentry events (GDPR Article 9 compliance — Islamic religious content is special-category data)
+- [x] **INFRA-01**: System sends zero data to Sentry when `SENTRY_ENABLED` is `false` or unset — local dev never triggers Sentry events
+- [x] **INFRA-02**: `main.py` initializes Sentry only when both `SENTRY_ENABLED=true` AND `SENTRY_DSN` are set; `LoggingIntegration(level=INFO, event_level=ERROR, sentry_logs_level=INFO)` is explicitly configured in `sentry_sdk.init()`
+- [x] **INFRA-03**: Every HTTP request carries a unique `correlation_id` UUID; all log events from that request include it — enabling full request-chain filtering in Sentry
+- [x] **INFRA-04**: Sentry events for a request include `session_id`, `user_id` (when authenticated), and `endpoint` as searchable tags on the per-request isolation scope
+- [x] **INFRA-05**: `send_default_pii=True` removed; a `before_send` hook redacts `user_query` and request body content from Sentry events (GDPR Article 9 compliance — Islamic religious content is special-category data)
 
 ### CHAT — Agentic Chat API (`api/chat.py`)
 

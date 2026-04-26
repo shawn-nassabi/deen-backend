@@ -123,7 +123,7 @@ Plans:
 | 10. Embedding Migration | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 11. Dead Code Cleanup | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
-| 13. Sentry Infrastructure | v1.3 | 2/2 | Complete   | 2026-04-26 |
+| 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
 | 14. Route Layer Instrumentation | v1.3 | 0/? | Not started | - |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 0/? | Not started | - |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/? | Not started | - |
