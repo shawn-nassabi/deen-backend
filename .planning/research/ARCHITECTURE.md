@@ -1,522 +1,339 @@
-# Architecture Research: Claude + Voyage AI Migration
+# Architecture: Sentry Deep Integration — correlation_id and Scope Propagation
 
-**Project:** Deen Backend v1.2 — Claude + Voyage AI Migration
-**Researched:** 2026-04-09
-**Confidence:** HIGH (all claims verified against source code, official LangChain docs, Voyage AI docs, pgvector docs)
+**Project:** Deen Backend v1.3 — Sentry Deep Integration
+**Researched:** 2026-04-26
+**Confidence:** HIGH (all claims verified against sentry-sdk 2.27.0 source, existing repo source, Python contextvar docs)
 
 ---
 
 ## Context
 
-This is a targeted replacement migration, not a redesign. The existing FastAPI + LangGraph + Pinecone + Redis architecture is unchanged. Every decision below is scoped to the minimum diff that moves LLM calls from OpenAI to Anthropic Claude and embedding calls from OpenAI to Voyage AI.
+This document answers one question: how should `correlation_id` propagate from the FastAPI HTTP boundary down through `core/pipeline_langgraph.py`, `agents/core/chat_agent.py`, and `agents/tools/` — and where should `sentry_sdk` scope binding happen so that every Sentry event in a request carries the right context?
+
+The existing stack has one significant constraint: the LangGraph pipeline runs synchronous LLM calls (`chain.stream()`, `self.llm.invoke()`) inside `async def` functions. This blocks the event loop but does not break contextvar propagation because Python's `contextvars.ContextVar` is copied into coroutines at creation time and is thread-safe. The design below exploits this.
 
 ---
 
-## Modified Files
+## How sentry-sdk 2.27.0 Already Manages Scope Per Request
 
-### 1. `core/config.py`
+sentry-sdk's ASGI middleware (`sentry_sdk/integrations/asgi.py`, line 177) wraps every request in `with sentry_sdk.isolation_scope() as sentry_scope:`. This call internally uses `contextvars.ContextVar` (see `sentry_sdk/scope.py`, lines 102-106) to fork a new isolation scope per request. The fork is stored in a `ContextVar`, so it is automatically inherited by any coroutine or synchronous call that runs within that ASGI request context.
 
-**What changes:**
-- Remove `OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")`
-- Remove the inline `if not OPENAI_API_KEY` raise guard (line 44-45)
-- Add `ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")` — reason: the Anthropic SDK, `langchain-anthropic`, and `init_chat_model(model_provider="anthropic")` all read `ANTHROPIC_API_KEY` from the environment automatically. Using `ANTHROPIC_API_KEY` (the canonical name) means zero explicit key-passing is needed in `init_chat_model` calls — the library picks it up natively. The user's `.env` currently has `CLAUDE_API_KEY`; that name must be renamed to `ANTHROPIC_API_KEY` in `.env` and `.env.example`.
-- Add `VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")` — `voyageai.Client` and `langchain-voyageai`'s `VoyageAIEmbeddings` both auto-read `VOYAGE_API_KEY` from the environment.
-- Update `EMBEDDING_MODEL` default: `"text-embedding-3-small"` -> `"voyage-4"`
-- Update `EMBEDDING_DIMENSIONS` default: `"1536"` -> `"1024"` (voyage-4 default dimension is 1024; this is also the dimension recorded in the new Alembic migration)
-- Add startup guard for `ANTHROPIC_API_KEY` in the existing inline validation block or alongside `validate_supabase_config()`.
+**Consequence:** When `sentry_sdk.get_isolation_scope()` is called from anywhere inside the request — including inside `pipeline_langgraph.py`, `chat_agent.py`, or a `@tool` function — it returns the same per-request forked scope. Tags set on it in middleware are visible everywhere in that request without any explicit passing.
 
-**API key naming decision — ANTHROPIC_API_KEY, not CLAUDE_API_KEY:**
-The Anthropic Python SDK (used by `langchain-anthropic` and directly by `init_chat_model`) unconditionally reads `os.environ["ANTHROPIC_API_KEY"]`. Using any other name (e.g., `CLAUDE_API_KEY`) requires passing `anthropic_api_key=value` explicitly at every call site and breaks auto-inference. The `generate_hikmah_tree.py` script already uses `ANTHROPIC_API_KEY` and passes it as `anthropic_api_key=anthropic_key` — that usage pattern becomes unnecessary once the env var is correctly named `ANTHROPIC_API_KEY`. Use the canonical name.
+This is the foundation the design builds on.
 
 ---
 
-### 2. `core/chat_models.py`
+## Recommended Propagation Mechanism: Python contextvars
 
-**What changes:**
-- Remove `from core.config import OPENAI_API_KEY`
-- Add `from langchain_anthropic import ChatAnthropic` — use `ChatAnthropic` directly, not `init_chat_model`
+Use `contextvars.ContextVar` for `correlation_id`. Do not pass it through function parameters. Do not store it in `ChatState`.
 
-**Why `ChatAnthropic` directly, not `init_chat_model`:**
-`init_chat_model` with `model_provider="anthropic"` works and is valid, but it performs a runtime dispatch that requires `langchain-anthropic` to be installed and adds a layer of indirection. Since this codebase is permanently switching to Claude (not dynamically dispatching between providers), using `ChatAnthropic(model=...)` directly is cleaner, more explicit, and avoids the `openai_api_key` parameter footgun entirely. It also makes the provider dependency visible at import time rather than at first call. The `generate_hikmah_tree.py` script already uses `init_chat_model(model=model_id, anthropic_api_key=anthropic_key)` — that works too, but direct instantiation is preferred for the application path.
+**Rationale:**
 
-**Concrete change for each factory function:**
+Option (b) — explicit parameters — would require adding `correlation_id: str` to `chat_pipeline_streaming_agentic`, `ChatAgent.astream`, `ChatAgent.invoke`, every `_*_node` method, and every `@tool` function. That is 15+ function signatures changed for infrastructure plumbing that has nothing to do with business logic. It bleeds observability concerns into the domain model. It also fails at the `@tool` boundary: LangGraph's `ToolNode` calls `@tool` functions with only their declared Pydantic arguments. Injecting an extra `correlation_id` parameter would break tool invocation.
 
-```python
-# BEFORE
-from core.config import OPENAI_API_KEY
-from langchain.chat_models import init_chat_model
+Option (c) — `ChatState` — has the same signature-pollution problem. `ChatState` is a domain-specific TypedDict; adding infrastructure fields couples observability to the agent protocol. It also does not help inside `@tool` functions, which receive only their declared args, not the full state.
 
-def get_generator_model():
-    from core.config import LARGE_LLM
-    return init_chat_model(model=LARGE_LLM, openai_api_key=OPENAI_API_KEY)
+Option (a) — `contextvars.ContextVar` — is the correct choice because:
+1. It is async-safe: `asyncio` copies the current `Context` into every new task/coroutine. Any `async def` spawned during the request inherits the context automatically.
+2. It is transparent to callers: no function signatures change.
+3. It works across the sync/async boundary: Python's `contextvars` work in synchronous code too. When `_agent_node` calls `self.llm.invoke()` synchronously, the contextvar is still readable because we are still within the same thread and context.
+4. It is the same mechanism sentry-sdk itself uses for per-request scope isolation.
+5. Zero changes to `ChatState`, `@tool` signatures, or `ChatAgent` interface.
 
-def get_enhancer_model():
-    from core.config import SMALL_LLM
-    return init_chat_model(model=SMALL_LLM, openai_api_key=OPENAI_API_KEY)
+---
 
-def get_classifier_model():
-    from core.config import LARGE_LLM
-    return init_chat_model(model=LARGE_LLM, openai_api_key=OPENAI_API_KEY)
+## Data Flow: correlation_id from HTTP Boundary to Deepest Log Call
 
-def get_translator_model():
-    from core.config import LARGE_LLM
-    base = init_chat_model(model=LARGE_LLM, openai_api_key=OPENAI_API_KEY)
-    return base.bind(temperature=0)
-
-# AFTER
-from langchain_anthropic import ChatAnthropic
-from core.config import LARGE_LLM, SMALL_LLM
-
-def get_generator_model() -> ChatAnthropic:
-    return ChatAnthropic(model=LARGE_LLM)
-
-def get_enhancer_model() -> ChatAnthropic:
-    return ChatAnthropic(model=SMALL_LLM)
-
-def get_classifier_model() -> ChatAnthropic:
-    return ChatAnthropic(model=SMALL_LLM)
-
-def get_translator_model() -> ChatAnthropic:
-    return ChatAnthropic(model=LARGE_LLM, temperature=0)
+```
+HTTP Request arrives
+    |
+    v
+[sentry ASGI middleware]
+    sentry_sdk.isolation_scope() forks per-request Sentry scope into ContextVar
+    |
+    v
+[CorrelationIdMiddleware]  (NEW: core/middleware.py)
+    correlation_id = str(uuid4())
+    _correlation_id_ctx.set(correlation_id)       # ContextVar write
+    |
+    v
+[FastAPI @app.middleware("http") — catch_exceptions_mw]  (MODIFIED: main.py)
+    (runs after CorrelationIdMiddleware; correlation_id already in context)
+    |
+    v
+[api/chat.py — chat_pipeline_agentic_ep]  (MODIFIED)
+    cid = get_correlation_id()               # ContextVar read
+    scope = sentry_sdk.get_isolation_scope() # same per-request scope
+    scope.set_tag("correlation_id", cid)
+    scope.set_tag("session_id", session_id)
+    scope.set_tag("user_id", user_id or "anonymous")
+    scope.set_tag("endpoint", "/chat/stream/agentic")
+    logger.info("...", extra={"correlation_id": cid, "session_id": session_id})
+    |
+    v
+[core/pipeline_langgraph.py — chat_pipeline_streaming_agentic]  (MODIFIED)
+    cid = get_correlation_id()               # ContextVar read — no parameter needed
+    logger.info("...", extra={"correlation_id": cid})
+    |
+    v
+[agents/core/chat_agent.py — _fiqh_classification_node / _agent_node / etc.]  (MODIFIED)
+    cid = get_correlation_id()
+    logger.info("...", extra={"correlation_id": cid})
+    |
+    v
+[agents/tools/retrieval_tools.py — @tool functions]  (MODIFIED)
+    cid = get_correlation_id()
+    logger.warning("...", extra={"correlation_id": cid})
 ```
 
-`ChatAnthropic` reads `ANTHROPIC_API_KEY` automatically from the environment; no explicit key passing needed.
-
-**Note on `get_classifier_model`:** Currently it uses `LARGE_LLM` (gpt-4.1). With Claude, `SMALL_LLM` (claude-haiku-4-5) is appropriate for classification — cheaper, fast, sufficient for binary classification. The factory function name stays the same; only the model constant changes.
+At every layer, the call is identical: `get_correlation_id()` reads the `ContextVar`. No arguments are threaded. The Sentry scope carries the same tags because it was set once in the route handler.
 
 ---
 
-### 3. `agents/core/chat_agent.py`
+## New and Modified Files
 
-**What changes:**
-- Remove `from core.config import OPENAI_API_KEY` (line 33)
-- Change `_create_llm_with_tools`:
+### New Files
+
+**`core/correlation.py`**
+Single responsibility: define the `ContextVar` and the two accessor functions.
 
 ```python
-# BEFORE
-from langchain.chat_models import init_chat_model
-llm = init_chat_model(
-    model=self.config.model.agent_model,
-    openai_api_key=OPENAI_API_KEY,
-    temperature=self.config.model.temperature,
-    max_tokens=self.config.model.max_tokens,
+import uuid
+from contextvars import ContextVar
+from typing import Optional
+
+_correlation_id_ctx: ContextVar[Optional[str]] = ContextVar(
+    "correlation_id", default=None
 )
 
-# AFTER
-from langchain_anthropic import ChatAnthropic
-llm = ChatAnthropic(
-    model=self.config.model.agent_model,
-    temperature=self.config.model.temperature,
-    max_tokens=self.config.model.max_tokens,
+def set_correlation_id(value: str) -> None:
+    _correlation_id_ctx.set(value)
+
+def get_correlation_id() -> str:
+    return _correlation_id_ctx.get() or "no-correlation-id"
+```
+
+No other module should touch `_correlation_id_ctx` directly — always go through these two functions.
+
+**`core/middleware.py`**
+FastAPI `BaseHTTPMiddleware` subclass that generates and sets the `correlation_id` for every request. Also sets Sentry context for the request-level scope.
+
+```python
+import uuid
+import sentry_sdk
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from core.correlation import set_correlation_id, get_correlation_id
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+        set_correlation_id(cid)
+        # Tag the already-forked per-request Sentry isolation scope
+        scope = sentry_sdk.get_isolation_scope()
+        scope.set_tag("correlation_id", cid)
+        scope.set_tag("http.path", request.url.path)
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = cid
+        return response
+```
+
+**Why `BaseHTTPMiddleware` and not `@app.middleware("http")`:**
+`BaseHTTPMiddleware` runs before route handlers and before FastAPI's dependency injection. The sentry ASGI integration wraps the entire ASGI app, so by the time `CorrelationIdMiddleware.dispatch` runs, the Sentry per-request isolation scope is already in the context. This ordering is safe. `@app.middleware("http")` decorators run in reverse registration order; `BaseHTTPMiddleware` added via `app.add_middleware()` runs before all `@app.middleware("http")` decorators, which is what we want (correlation_id must be available when `catch_exceptions_mw` fires).
+
+---
+
+### Modified Files
+
+**`main.py`**
+- Register `CorrelationIdMiddleware` via `app.add_middleware(CorrelationIdMiddleware)` before the CORS middleware registration (so it runs in the outermost position after Sentry ASGI).
+- Update `catch_exceptions_mw` to log via `logger.error` instead of `print`, including `correlation_id` in `extra={}`.
+
+**`api/chat.py`**
+- Import `get_correlation_id` from `core.correlation`.
+- Import `sentry_sdk`.
+- In `chat_pipeline_agentic_ep`: after extracting `user_id` and `session_id`, call `sentry_sdk.get_isolation_scope().set_tag(...)` for `session_id`, `user_id`, and `endpoint`. Log entry/error with `correlation_id` in `extra`.
+- Replace `print("UNHANDLED ERROR ...")` and `traceback.print_exc()` with `logger.error(...)`.
+- Apply same pattern to `chat_pipeline_stream_ep` and `chat_pipeline_agentic_non_stream_ep`.
+
+**`api/reference.py`**, **`api/hikmah.py`**, **`api/primers.py`**
+- Same treatment: replace `print` with `logger.*`; add Sentry scope tags; include `correlation_id` in `extra`.
+
+**`core/pipeline_langgraph.py`**
+- Import `logging` and `get_correlation_id`.
+- Replace all `print(f"[AGENTIC PIPELINE] ...")` calls with `logger.info/warning/error(...)`.
+- Add `correlation_id=get_correlation_id()` to every `extra={}` dict.
+- No signature changes.
+
+**`agents/core/chat_agent.py`**
+- Import `logging` and `get_correlation_id`.
+- Replace all `print(f"[FIQH CLASSIFICATION NODE] ...")`, `print(f"[AGENT NODE] ...")`, etc. with `logger.*`.
+- Add `correlation_id=get_correlation_id()` to `extra={}` on every log call.
+- No signature changes to `invoke`, `astream`, or any node method.
+
+**`agents/tools/retrieval_tools.py`**
+- Replace all `print(f"[retrieve_*_tool] Error: {e}")` with `logger.error(...)`.
+- Add `correlation_id=get_correlation_id()` to `extra={}`.
+- No change to `@tool` signatures.
+
+**`agents/tools/classification_tools.py`**, **`agents/tools/enhancement_tools.py`**, **`agents/tools/translation_tools.py`**
+- Same treatment: replace `print` with `logger.*`; add `correlation_id` to `extra`.
+
+---
+
+## Where sentry_sdk Scope Binding Happens
+
+There are three layers of scope binding. Each serves a distinct purpose.
+
+**Layer 1: Sentry ASGI integration (automatic, no code needed)**
+`sentry_sdk.init(integrations=[FastApiIntegration()])` — which the `sentry-sdk[fastapi]` extra auto-configures — wraps the entire ASGI app. It forks a new isolation scope per request and attaches HTTP method, URL, and request headers. This happens before any application code runs. No action required.
+
+**Layer 2: CorrelationIdMiddleware (NEW)**
+After the Sentry isolation scope is forked, `CorrelationIdMiddleware.dispatch` calls `sentry_sdk.get_isolation_scope().set_tag(...)` to attach `correlation_id` and `http.path`. These tags appear on every Sentry event generated anywhere in the request, because they are on the isolation scope.
+
+**Layer 3: Route handler (MODIFIED)**
+In each route handler (e.g., `chat_pipeline_agentic_ep`), after extracting `session_id` and `user_id`, call:
+
+```python
+scope = sentry_sdk.get_isolation_scope()
+scope.set_tag("session_id", session_id)
+scope.set_tag("user_id", user_id or "anonymous")
+scope.set_tag("endpoint", "/chat/stream/agentic")
+```
+
+This adds domain-level context that the middleware does not have (it runs before request body parsing and JWT extraction). Do not use `sentry_sdk.set_tag()` (top-level function) — that writes to the isolation scope of the current request anyway (see `sentry_sdk/api.py`, line 295: `return get_isolation_scope().set_tag(...)`), so either form works, but `get_isolation_scope().set_tag(...)` is more explicit about what it is doing.
+
+Do not use `sentry_sdk.push_scope()` or `sentry_sdk.configure_scope()`. These are deprecated in sentry-sdk 2.x. `push_scope()` creates a nested current scope (not isolation scope) and is designed for temporary, locally-scoped overrides. For request-level context that should propagate to all events in a request, `get_isolation_scope().set_tag()` is the correct API.
+
+---
+
+## Async Boundary: Does contextvars Work Through LangGraph's astream?
+
+Yes, with one caveat.
+
+`ChatAgent.astream()` is called with `async for event in self.compiled_graph.astream(...)`. LangGraph's `compiled_graph.astream()` is an async generator. Python copies the current `Context` when a coroutine or async generator is started. The `_correlation_id_ctx` ContextVar set in the middleware is part of that context copy. So `get_correlation_id()` called inside `_fiqh_classification_node` (a regular sync function called from within an async context) reads the correct value.
+
+The sync LLM calls inside async nodes (`self.llm.invoke(messages)`, `chain.stream(...)`) run on the same thread and within the same `Context` — they are blocking calls, not new threads or tasks. ContextVars are thread-local by design and do not move across threads. Since these blocking calls do not spawn new threads, they inherit the same context. ContextVar reads inside them return the correct `correlation_id`.
+
+The only exception would be if LangGraph used `asyncio.run_in_executor()` to offload work to a `ThreadPoolExecutor`. LangGraph does not do this for node execution — nodes are called directly within the async event loop. This is confirmed by the existing code pattern: `_agent_node` is a synchronous method called from an async graph; the graph calls it via its internal node execution, not via `run_in_executor`. So no cross-thread context loss occurs.
+
+The `fiqh_subgraph.invoke(...)` call inside `_call_fiqh_subgraph_node` is a blocking synchronous call to a LangGraph sub-graph. It runs on the same thread. ContextVar reads inside the sub-graph nodes also work correctly.
+
+---
+
+## Async Boundary: StreamingResponse and the response_generator AsyncGenerator
+
+`chat_pipeline_streaming_agentic` returns a `StreamingResponse` wrapping `response_generator()`. `response_generator` is an `async def` generator. It is awaited by Starlette as a separate async iteration — but crucially, it is created within the scope of the route handler's `async def`, which means Python copies the current `Context` at creation time (when `response_generator()` is called, not when it is iterated). The `correlation_id` ContextVar is already set by the time the route handler runs, so the generator inherits it.
+
+The `extra={"correlation_id": get_correlation_id()}` in `response_generator`'s log calls will resolve to the correct UUID for the lifetime of the streaming response.
+
+---
+
+## Logging Pattern for All Modified Call Sites
+
+All logging in `api/`, `core/`, `agents/` should follow this pattern:
+
+```python
+import logging
+from core.correlation import get_correlation_id
+
+logger = logging.getLogger(__name__)
+
+# In a function body:
+logger.info(
+    "Starting agentic pipeline",
+    extra={
+        "correlation_id": get_correlation_id(),
+        "session_id": session_id,
+    }
+)
+
+logger.error(
+    "Pipeline error: %s",
+    str(e),
+    extra={"correlation_id": get_correlation_id()},
+    exc_info=True,
 )
 ```
 
----
+The `ExtraFormatter` in `core/logging_config.py` already handles `extra` dict keys by appending them as `key=value` pairs to the log line. No changes to `ExtraFormatter` or `setup_logging` are needed.
 
-### 4. `agents/config/agent_config.py`
-
-**What changes:**
-- `ModelConfig.agent_model` default fallback: `LARGE_LLM or "gpt-4o"` -> `LARGE_LLM or "claude-sonnet-4-6"`
-- Same in `json_schema_extra` example.
-- `ModelConfig.temperature` validator: change `le=2.0` to `le=1.0` — Claude's valid temperature range is 0-1; values above 1.0 will error on the Anthropic API.
-
-This is a guard string used only when `LARGE_LLM` env var is not set. The actual model is always controlled by the env var in practice.
-
----
-
-### 5. `services/embedding_service.py`
-
-**What changes:**
-- Remove `from openai import OpenAI`
-- Remove `from core.config import OPENAI_API_KEY` (keep `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `NOTE_FILTER_THRESHOLD`)
-- Add `import voyageai`
-- Change `__init__`:
-
-```python
-# BEFORE
-self.client = OpenAI(api_key=OPENAI_API_KEY)
-
-# AFTER
-self.client = voyageai.Client()  # reads VOYAGE_API_KEY from env automatically
-```
-
-- Change `generate_embedding`:
-
-```python
-# BEFORE
-response = self.client.embeddings.create(
-    model=EMBEDDING_MODEL, input=text, dimensions=EMBEDDING_DIMENSIONS
-)
-return response.data[0].embedding
-
-# AFTER
-result = self.client.embed([text], model=EMBEDDING_MODEL)
-return result.embeddings[0]
-```
-
-- Change `generate_embeddings_batch`:
-
-```python
-# BEFORE
-response = self.client.embeddings.create(
-    model=EMBEDDING_MODEL, input=texts, dimensions=EMBEDDING_DIMENSIONS
-)
-return [item.embedding for item in response.data]
-
-# AFTER
-result = self.client.embed(texts, model=EMBEDDING_MODEL)
-return result.embeddings
-```
-
-**Why `voyageai.Client` (native SDK), not `langchain-voyageai`:**
-`EmbeddingService` is not a LangChain component — it is a plain Python service that calls the embedding API and stores vectors in pgvector. The native `voyageai.Client` gives direct control over batching, output dimensions, and error handling without a LangChain wrapper layer. `langchain-voyageai`'s `VoyageAIEmbeddings` is appropriate when plugging into a LangChain `PineconeVectorStore` or chain, which is not what this service does. The native SDK is the simpler and more correct choice here.
-
-**Voyage AI model selection:**
-Use `voyage-4` (not `voyage-4-large`). Rationale: `voyage-4` is the production general-purpose model with 1024-dim default output, appropriate for user notes and lesson chunks. `voyage-4-large` is intended for maximum accuracy scenarios with higher cost. For pgvector semantic similarity over user memory notes and lesson content, `voyage-4` quality is sufficient and cost-proportionate.
-
-**Output dimensions:**
-`voyage-4` default dimension is 1024. The `output_dimension` parameter does not need to be passed explicitly if 1024 is acceptable (it is the default). For explicitness and alignment with `EMBEDDING_DIMENSIONS=1024` in config, passing it is fine but not required.
-
-**Voyage AI batch size limit:** `voyageai.Client.embed()` has a max of 128 texts per call. The existing `generate_embeddings_batch` sends all texts in a single call. For lesson chunk embedding (typically small), this is fine in practice. If batches ever exceed 128, the implementation must chunk input into groups of 128.
-
----
-
-### 6. `db/models/embeddings.py`
-
-**What changes:**
-- Change module-level constant: `EMBEDDING_DIMENSIONS = 1536` -> `EMBEDDING_DIMENSIONS = 1024`
-- Update docstring comment from "OpenAI text-embedding-3-small" to "Voyage AI voyage-4"
-- The `Vector(EMBEDDING_DIMENSIONS)` column definitions on `NoteEmbedding.embedding` and `LessonChunkEmbedding.embedding` update automatically from the constant.
-
-No structural change to the ORM model — the `Vector(n)` type is the only thing that changes.
-
----
-
-### 7. `modules/generation/stream_generator.py` — Dead code cleanup
-
-- Remove `from openai import OpenAI` (line 2)
-- Remove `from core.config import OPENAI_API_KEY` (line 3)
-- Remove `client = OpenAI(api_key=OPENAI_API_KEY)` (line 13, module-level instantiation)
-- These are unused — the module already delegates to `core.chat_models` for actual LLM calls.
-
----
-
-### 8. `modules/classification/classifier.py` — Dead code cleanup
-
-- Remove `from openai import OpenAI` (line 1)
-- Remove `from core.config import OPENAI_API_KEY` (line 6)
-- The `OpenAI` import is never used; the module uses `chat_models.get_classifier_model()`.
-
----
-
-### 9. `scripts/hikmah_generation/generate_hikmah_tree.py`
-
-**What changes:**
-- Remove the `else` branch that initializes the OpenAI path (`init_chat_model(model=LARGE_LLM, openai_api_key=OPENAI_API_KEY)`)
-- Remove `from core.config import OPENAI_API_KEY` import in that branch
-- The existing anthropic branch (`init_chat_model(model=model_id, anthropic_api_key=anthropic_key)`) can remain as-is, or be simplified to `ChatAnthropic(model=model_id)` once `ANTHROPIC_API_KEY` is the env var name (eliminating the explicit key lookup)
-- The `model_choice` CLI flag stays, but only Claude model IDs are valid
-
----
-
-### 10. `.env.example`
-
-**What changes:**
-- Replace `OPENAI_API_KEY=your-openai-api-key-here` with `ANTHROPIC_API_KEY=your-anthropic-api-key-here`
-- Add `VOYAGE_API_KEY=your-voyage-api-key-here`
-- Update `LARGE_LLM=gpt-4.1-2025-04-14` -> `LARGE_LLM=claude-sonnet-4-6`
-- Update `SMALL_LLM=gpt-4o-mini-2024-07-18` -> `SMALL_LLM=claude-haiku-4-5`
-- Update `EMBEDDING_MODEL=text-embedding-3-small` -> `EMBEDDING_MODEL=voyage-4`
-- Update `EMBEDDING_DIMENSIONS=1536` -> `EMBEDDING_DIMENSIONS=1024`
-
----
-
-## New Files
-
-### Alembic Migration: `alembic/versions/20260409_resize_embedding_dimensions.py`
-
-This is a new migration file, not a modification to the existing `20260122_create_embedding_tables.py`. The existing migration must stay unchanged to preserve the chain.
-
----
-
-## Data Flow Changes
-
-### LLM Call Path (before vs after)
-
-```
-BEFORE:
-ChatRequest -> core/pipeline_langgraph.py -> agents/core/chat_agent.py
-    -> init_chat_model(model, openai_api_key=OPENAI_API_KEY)
-    -> langchain-openai -> openai SDK -> OpenAI API
-
-AFTER:
-ChatRequest -> core/pipeline_langgraph.py -> agents/core/chat_agent.py
-    -> ChatAnthropic(model, ...)
-    -> langchain-anthropic -> anthropic SDK -> Anthropic API
-```
-
-The LangGraph graph structure, tool definitions, state machine, and SSE streaming path are all unchanged. `ChatAnthropic` implements the same `BaseChatModel` interface as the OpenAI model, so `.bind_tools()`, `.invoke()`, `.stream()`, and `.astream()` all work identically.
-
-### Embedding Call Path (before vs after)
-
-```
-BEFORE:
-services/embedding_service.py -> openai.OpenAI(api_key=...).embeddings.create(
-    model="text-embedding-3-small", input=text, dimensions=1536
-) -> 1536-dim vector -> pgvector Vector(1536) column
-
-AFTER:
-services/embedding_service.py -> voyageai.Client().embed(
-    [text], model="voyage-4"
-) -> 1024-dim vector -> pgvector Vector(1024) column
-```
-
-The pgvector similarity queries (`<=>` cosine distance operator) in `find_similar_notes_to_lesson` are unaffected by the dimension change — the SQL expression is dynamically built from stored embedding values, and the operator works for any fixed dimension.
-
-### What Does NOT Change
-
-- Pinecone retrieval for hadith/Quran/fiqh corpora — those vectors use HuggingFace `all-mpnet-base-v2` (768-dim) for dense and BM25 for sparse. Neither is affected.
-- `modules/embedding/embedder.py` — uses `sentence-transformers`, not OpenAI. Not affected.
-- BM25 sparse retrieval (`modules/fiqh/retriever.py`) — uses `pinecone-text` BM25Encoder from a pre-trained vocabulary file. Not affected.
-- Redis conversation memory — not affected.
-- SSE streaming protocol — not affected.
-- Supabase Auth JWT validation — not affected.
-- LangGraph graph topology — not affected.
-
----
-
-## Alembic Strategy
-
-### The Problem
-
-The `note_embeddings` and `lesson_chunk_embeddings` tables were created in `20260122_create_embedding_tables.py` with `Vector(1536)`. They also have HNSW indexes built on those columns. Changing the vector dimension requires:
-
-1. Dropping the HNSW indexes (indexes are dimension-specific in pgvector; they cannot be reused after a type change)
-2. `ALTER COLUMN embedding TYPE vector(1024)` on both tables
-3. Recreating the HNSW indexes
-
-### ALTER vs Drop/Recreate Table
-
-`ALTER TABLE ... ALTER COLUMN embedding TYPE vector(1024)` works in pgvector — it is not a "drop and recreate the table" operation. The column is retyped in place. However, pgvector requires that the HNSW index be dropped first because it is tied to the specific dimension.
-
-**Critical:** All existing 1536-dim float arrays in the column would be reinterpreted after the ALTER, producing corrupt vectors. The migration must therefore also TRUNCATE both tables before the ALTER. Since the embedding tables are a regenerable cache (they are rebuilt from source data by calling the embedding service), truncating them is safe. The first run after migration will regenerate embeddings via `voyage-4` at 1024 dims.
-
-### Migration Sequence
-
-```
-1. DROP INDEX IF EXISTS idx_note_embeddings_vector
-2. DROP INDEX IF EXISTS idx_lesson_chunk_embeddings_vector
-3. TRUNCATE TABLE note_embeddings
-4. TRUNCATE TABLE lesson_chunk_embeddings
-5. ALTER TABLE note_embeddings ALTER COLUMN embedding TYPE vector(1024) USING embedding::text::vector(1024)
-6. ALTER TABLE lesson_chunk_embeddings ALTER COLUMN embedding TYPE vector(1024) USING embedding::text::vector(1024)
-7. CREATE INDEX idx_note_embeddings_vector ON note_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)
-8. CREATE INDEX idx_lesson_chunk_embeddings_vector ON lesson_chunk_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)
-```
-
-**Note on `USING` clause:** The `ALTER COLUMN TYPE` requires a USING clause to cast existing data. The cast `embedding::text::vector(1024)` is the standard pgvector approach for in-place ALTER. Since we TRUNCATE first, there are no rows to cast — but the USING clause is still required syntactically by Postgres for type changes on vector columns. It executes on zero rows.
-
-**Migration file template:**
-
-```python
-"""Resize embedding vector columns 1536 -> 1024 dims for Voyage AI
-
-Revision ID: embeddings_002
-Revises: embeddings_001
-Create Date: 2026-04-09
-"""
-from alembic import op
-from pgvector.sqlalchemy import Vector
-
-revision = 'embeddings_002'
-down_revision = 'embeddings_001'
-branch_labels = None
-depends_on = None
-
-
-def upgrade():
-    # Drop HNSW indexes first (dimension-specific, must precede ALTER)
-    op.execute('DROP INDEX IF EXISTS idx_note_embeddings_vector')
-    op.execute('DROP INDEX IF EXISTS idx_lesson_chunk_embeddings_vector')
-
-    # Truncate: existing 1536-dim vectors are incompatible with 1024-dim type.
-    # These tables are a regenerable cache; truncation is safe.
-    op.execute('TRUNCATE TABLE note_embeddings')
-    op.execute('TRUNCATE TABLE lesson_chunk_embeddings')
-
-    # Resize columns
-    op.alter_column(
-        'note_embeddings', 'embedding',
-        type_=Vector(1024),
-        postgresql_using='embedding::text::vector(1024)'
-    )
-    op.alter_column(
-        'lesson_chunk_embeddings', 'embedding',
-        type_=Vector(1024),
-        postgresql_using='embedding::text::vector(1024)'
-    )
-
-    # Recreate HNSW indexes with same parameters as original migration
-    op.execute("""
-        CREATE INDEX idx_note_embeddings_vector
-        ON note_embeddings
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-    """)
-    op.execute("""
-        CREATE INDEX idx_lesson_chunk_embeddings_vector
-        ON lesson_chunk_embeddings
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-    """)
-
-
-def downgrade():
-    op.execute('DROP INDEX IF EXISTS idx_note_embeddings_vector')
-    op.execute('DROP INDEX IF EXISTS idx_lesson_chunk_embeddings_vector')
-    op.execute('TRUNCATE TABLE note_embeddings')
-    op.execute('TRUNCATE TABLE lesson_chunk_embeddings')
-    op.alter_column(
-        'note_embeddings', 'embedding',
-        type_=Vector(1536),
-        postgresql_using='embedding::text::vector(1536)'
-    )
-    op.alter_column(
-        'lesson_chunk_embeddings', 'embedding',
-        type_=Vector(1536),
-        postgresql_using='embedding::text::vector(1536)'
-    )
-    op.execute("""
-        CREATE INDEX idx_note_embeddings_vector
-        ON note_embeddings
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-    """)
-    op.execute("""
-        CREATE INDEX idx_lesson_chunk_embeddings_vector
-        ON lesson_chunk_embeddings
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-    """)
-```
-
----
-
-## Dependency Changes
-
-### Add
-
-```
-langchain-anthropic>=0.3.0    # ChatAnthropic; reads ANTHROPIC_API_KEY from env
-voyageai>=0.3.0               # voyageai.Client; reads VOYAGE_API_KEY from env
-```
-
-### Remove
-
-```
-openai==1.91.0                # No longer used in application code
-langchain-openai==0.3.25      # No longer used in application code
-```
-
-**Why `langchain-openai` can be fully removed:**
-- `init_chat_model` in `chat_models.py` and `chat_agent.py` is replaced by `ChatAnthropic`
-- `EmbeddingService` switches to `voyageai.Client`
-- The BM25 sparse encoder (`pinecone-text`) does NOT depend on `langchain-openai` — it uses a pre-trained vocabulary file and `pinecone-text` library
-- `langchain-openai` is currently only in the application dependency graph because of the `init_chat_model` + `openai_api_key` calls. Once those are gone, no application code imports from `langchain_openai`
-
-**Tests that need updating:**
-- `tests/test_embedding_service.py` — mocks `services.embedding_service.OpenAI`. Must be updated to mock `voyageai.Client` and the new response shape (`result.embeddings` not `result.data[0].embedding`).
-- `tests/test_agentic_streaming_sse.py` — integration test that mentions `OPENAI_API_KEY` in docstring. Update docstring to `ANTHROPIC_API_KEY`.
-
-**Keep:**
-- `pinecone-text` — BM25 encoder for fiqh sparse retrieval (runtime, not just ingestion)
-- `langchain-huggingface` + `sentence-transformers` — Pinecone dense embedder for hadith/Quran/fiqh, unaffected
-- `langchain-pinecone` — PineconeVectorStore integration, unaffected
-- `langchain` (core) — graph orchestration, prompts, runnables
+Because `enable_logs=True` is set in `sentry_sdk.init()`, Sentry's logging integration captures `logger.error()` and `logger.warning()` calls as Sentry log events. The `correlation_id` from `extra={}` appears as a structured field on the Sentry event if the log handler is configured to forward it — but more importantly, the Sentry isolation scope tags (`correlation_id`, `session_id`) set at Layers 1-3 above are automatically attached to all Sentry events (including captured exceptions and log events) for the request.
 
 ---
 
 ## Build Order
 
-Dependency graph:
+The dependency graph requires this sequence:
 
-```
-env vars (ANTHROPIC_API_KEY, VOYAGE_API_KEY rename in .env)
-    |
-    v
-core/config.py + requirements.txt          [Phase 1 — unblocks everything]
-    |
-    v
-core/chat_models.py                        [Phase 2 — LLM swap]
-agents/core/chat_agent.py                  [Phase 2 — LLM swap]
-agents/config/agent_config.py              [Phase 2 — fallback string + temperature bound]
-    |
-    v
-services/embedding_service.py              [Phase 3 — embedding swap]
-db/models/embeddings.py                    [Phase 3 — ORM dim constant]
-Alembic migration (embeddings_002)         [Phase 3 — DB schema, run before server starts]
-    |
-    v
-Dead code cleanup                          [Phase 4 — no functional impact]
-modules/generation/stream_generator.py
-modules/classification/classifier.py
-scripts/hikmah_generation/generate_hikmah_tree.py
-.env.example + test updates                [Phase 4 — documentation + tests]
-```
+**Step 1 — `core/correlation.py` (new file)**
+No dependencies. Every subsequent step imports from it. Build first.
 
-### Rationale
+**Step 2 — `core/middleware.py` (new file)**
+Depends on `core/correlation.py`. Does not depend on any route or pipeline code.
 
-1. **Config first** — every other file imports from `core/config.py`. Until `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` are present in config (and in `.env`), no model code can be tested. The inline guard (raise if missing) must swap from `OPENAI_API_KEY` to `ANTHROPIC_API_KEY` here too, otherwise server startup fails even after keys are correct.
+**Step 3 — `main.py` (register middleware)**
+Depends on `core/middleware.py`. After this step, all requests have `correlation_id` set in ContextVar and Sentry scope.
 
-2. **LLM swap before embedding swap** — chat models affect the primary request path (`/chat/stream/agentic`). Isolating this change and validating it end-to-end before touching the embedding subsystem keeps scope narrow and rollback clean.
+**Step 4 — `api/chat.py`, `api/reference.py`, `api/hikmah.py`, `api/primers.py` (route layer)**
+Depends on Step 1 (for `get_correlation_id`). Scope binding at the route layer requires Step 3 to be complete so that scope tags set here augment the already-tagged scope, rather than potentially racing with scope initialization.
 
-3. **Embedding swap + DB migration together** — `EmbeddingService` and `db/models/embeddings.py` must change simultaneously with the Alembic migration. If the ORM model says `Vector(1024)` but the DB still has `Vector(1536)` columns, every embedding write will fail. Run `alembic upgrade head` before starting the server after Phase 3.
+**Step 5 — `core/pipeline_langgraph.py` (pipeline layer)**
+Depends on Step 1. No structural changes; print-to-logger substitution only.
 
-4. **Dead code cleanup last** — the three dead-import files have zero functional impact on the OpenAI to Claude switch. Cleaning them up after the functional changes are validated keeps each phase's diff focused and rollback straightforward.
+**Step 6 — `agents/core/chat_agent.py` (agent layer)**
+Depends on Step 1. No structural changes; print-to-logger substitution only.
 
-### Phase Summary
+**Step 7 — `agents/tools/retrieval_tools.py` and other tool files (tool layer)**
+Depends on Step 1. No structural changes; print-to-logger substitution only.
 
-| Phase | Files | Gate |
-|-------|-------|------|
-| 1: Config + Deps | `core/config.py`, `requirements.txt`, `.env`, `.env.example` | `import core.config` succeeds; `pip install` clean |
-| 2: LLM Swap | `core/chat_models.py`, `agents/core/chat_agent.py`, `agents/config/agent_config.py` | `POST /chat/agentic` returns a Claude response; streaming SSE events flow correctly |
-| 3: Embedding + DB | `services/embedding_service.py`, `db/models/embeddings.py`, new Alembic migration | `alembic upgrade head` clean; embedding write/read round-trip passes |
-| 4: Cleanup + Tests | Dead imports, `generate_hikmah_tree.py`, `.env.example`, test mocks | `pytest tests -q` green |
+Steps 5-7 have no inter-dependencies and can be done in any order after Step 4.
 
 ---
 
 ## Integration Points Summary
 
-| Integration Point | Before | After | Risk |
-|-------------------|--------|-------|------|
-| `core/chat_models.py` 4 factory functions | `init_chat_model(..., openai_api_key=)` | `ChatAnthropic(model=...)` | LOW — same BaseChatModel interface |
-| `agents/core/chat_agent.py` `_create_llm_with_tools` | `init_chat_model(..., openai_api_key=)` | `ChatAnthropic(model=..., temperature=..., max_tokens=...)` | LOW — `.bind_tools()` works identically |
-| `services/embedding_service.py` `generate_embedding` | `openai.Client.embeddings.create(...)` | `voyageai.Client().embed([text], model=...)` | MEDIUM — response shape differs; index into `.embeddings[0]` not `.data[0].embedding` |
-| `db/models/embeddings.py` `Vector(1536)` | 1536 dims | 1024 dims | MEDIUM — requires Alembic migration before first write |
-| `core/config.py` API key guard | `OPENAI_API_KEY` raise | `ANTHROPIC_API_KEY` raise | LOW — same guard pattern |
-| `agents/config/agent_config.py` fallback + temperature bound | `"gpt-4o"`, `le=2.0` | `"claude-sonnet-4-6"`, `le=1.0` | LOW — guard only; temperature bound is a correctness fix |
-| Dead imports (3 files) | Module-level `OpenAI()` client | Remove | LOW — currently unused |
+| File | Change Type | What Changes | Risk |
+|------|-------------|--------------|------|
+| `core/correlation.py` | NEW | ContextVar definition, `get_correlation_id()`, `set_correlation_id()` | NONE |
+| `core/middleware.py` | NEW | `CorrelationIdMiddleware` — generates UUID, sets ContextVar, tags Sentry scope | LOW |
+| `main.py` | MODIFIED | Register `CorrelationIdMiddleware`; update `catch_exceptions_mw` to use logger | LOW |
+| `api/chat.py` | MODIFIED | Add Sentry scope tags per route; replace `print`/`traceback.print_exc` with `logger.*` | LOW |
+| `api/reference.py` | MODIFIED | Same pattern | LOW |
+| `api/hikmah.py` | MODIFIED | Same pattern | LOW |
+| `api/primers.py` | MODIFIED | Same pattern | LOW |
+| `core/pipeline_langgraph.py` | MODIFIED | Replace `print` with `logger.*`; add `correlation_id` to `extra={}` | LOW |
+| `agents/core/chat_agent.py` | MODIFIED | Replace `print` with `logger.*`; add `correlation_id` to `extra={}` | LOW |
+| `agents/tools/retrieval_tools.py` | MODIFIED | Replace `print` with `logger.error`; add `correlation_id` to `extra={}` | LOW |
+| `agents/tools/classification_tools.py` | MODIFIED | Same pattern | LOW |
+| `agents/tools/enhancement_tools.py` | MODIFIED | Same pattern | LOW |
+| `agents/tools/translation_tools.py` | MODIFIED | Same pattern | LOW |
+
+**No changes to:**
+- `agents/state/chat_state.py` — `ChatState` is not modified
+- `agents/config/agent_config.py` — no observability fields added
+- `core/logging_config.py` — `ExtraFormatter` already handles `extra` keys correctly
+- Any `@tool` function signatures — ContextVar reads happen inside tool body, not in signature
 
 ---
 
-## Open Questions / Flags for Phase Research
+## What Does NOT Change
 
-1. **Claude tool-calling streaming events:** Claude's streaming tool-call event format differs from OpenAI's. The SSE event extraction in `core/pipeline_langgraph.py` reads `response_chunk` and `response_end` events from LangGraph's `astream()` output. LangGraph abstracts this difference, but the actual token chunking in `chain.stream()` (which is called directly in the generate_response node) may emit differently shaped events. Smoke-test the full streaming SSE path after Phase 2 before proceeding to Phase 3.
-
-2. **`max_tokens` required by Claude:** Claude requires `max_tokens` to be set explicitly — there is no server-side default, unlike OpenAI. `ModelConfig.max_tokens` is currently `Optional[int]` defaulting to `None`. With `ChatAnthropic`, passing `None` will likely raise a validation error. A sensible default (e.g., 4096) should be added to `ModelConfig` in Phase 2. Check the Anthropic API docs for the maximum allowed value per model.
-
-3. **`get_translator_model` uses `.bind(temperature=0)`:** The existing code does `base.bind(temperature=0)` after `init_chat_model`. `ChatAnthropic` supports `.bind()` — but the recommended pattern is to pass `temperature=0` directly to the constructor, which is what the After example shows. Verify that `.bind()` is not needed.
-
-4. **`modules/fiqh/` LLM calls:** The fiqh module (`modules/fiqh/classifier.py`, `modules/fiqh/generator.py`, etc.) imports from `core.chat_models` via the factory functions. Because those factory functions are being replaced, fiqh module behavior automatically follows. No direct changes needed in `modules/fiqh/` — but the fiqh pipeline should be included in Phase 2 smoke testing.
+- `ChatState` TypedDict — no new fields
+- `@tool` function signatures — LangGraph's ToolNode invokes tools with their declared Pydantic args only; adding a `correlation_id` parameter would break tool invocation
+- `ChatAgent.astream` / `ChatAgent.invoke` signatures — no new parameters
+- `chat_pipeline_streaming_agentic` signature — no new parameters
+- Any LangGraph graph topology
+- SSE event protocol
 
 ---
 
 ## Sources
 
-- [LangChain ChatAnthropic integration](https://docs.langchain.com/oss/python/integrations/chat/anthropic) — HIGH confidence
-- [langchain-anthropic on PyPI](https://pypi.org/project/langchain-anthropic/) — HIGH confidence
-- [Voyage AI Embeddings API docs](https://docs.voyageai.com/docs/embeddings) — HIGH confidence (voyage-4 default dim = 1024 verified directly)
-- [voyageai Python SDK on GitHub](https://github.com/voyage-ai/voyageai-python) — HIGH confidence
-- [langchain-voyageai on PyPI](https://pypi.org/project/langchain-voyageai/) — MEDIUM confidence (langchain wrapper; confirmed not used for EmbeddingService)
-- [pgvector ALTER COLUMN discussion](https://github.com/pgvector/pgvector/issues/183) — MEDIUM confidence (community-confirmed; standard Postgres ALTER TABLE behavior)
-- Source code: all file-level claims verified against repo files read above
+- `sentry_sdk/integrations/asgi.py` line 177 — `isolation_scope()` called per request (verified in installed package)
+- `sentry_sdk/scope.py` lines 102-106 — `_isolation_scope` and `_current_scope` are `ContextVar` instances (verified in installed package)
+- `sentry_sdk/api.py` lines 295, 301, 307, 313, 319 — `set_tag`, `set_context`, etc. delegate to `get_isolation_scope()` (verified in installed package)
+- Python docs — `contextvars.ContextVar` is copied into coroutines at creation; thread-local for synchronous code
+- `agents/core/chat_agent.py` — node methods are synchronous callables invoked within LangGraph's async executor; no `run_in_executor` used (verified in repo source)
+- `core/logging_config.py` — `ExtraFormatter` strips `_RESERVED` keys and appends remaining `extra` keys as `key=value` (verified in repo source)
