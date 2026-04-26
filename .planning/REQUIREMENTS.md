@@ -79,15 +79,27 @@
 
 ## Traceability
 
-*(Filled by roadmapper)*
-
 | REQ-ID | Phase |
 |--------|-------|
-| INFRA-01..05 | — |
-| CHAT-01..03 | — |
-| REF-01..03 | — |
-| HIK-01..02 | — |
-| PRIM-01 | — |
-| PIPE-01..02 | — |
-| TOOL-01..02 | — |
-| FIQH-01..04 | — |
+| INFRA-01 | Phase 13 |
+| INFRA-02 | Phase 13 |
+| INFRA-03 | Phase 13 |
+| INFRA-04 | Phase 13 |
+| INFRA-05 | Phase 13 |
+| CHAT-01 | Phase 14 |
+| CHAT-02 | Phase 14 |
+| CHAT-03 | Phase 14 |
+| REF-01 | Phase 14 |
+| REF-02 | Phase 14 |
+| REF-03 | Phase 14 |
+| HIK-01 | Phase 14 |
+| HIK-02 | Phase 14 |
+| PRIM-01 | Phase 14 |
+| PIPE-01 | Phase 15 |
+| PIPE-02 | Phase 15 |
+| TOOL-01 | Phase 15 |
+| TOOL-02 | Phase 15 |
+| FIQH-01 | Phase 16 |
+| FIQH-02 | Phase 16 |
+| FIQH-03 | Phase 16 |
+| FIQH-04 | Phase 16 |
