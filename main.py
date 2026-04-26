@@ -82,19 +82,28 @@ app.include_router(memory_admin.router)             # /admin/memory
 app.include_router(primers.primers_router)          # /primers
 
 
+import logging
 from fastapi.responses import JSONResponse
 from fastapi.requests import Request
-import traceback
+
+logger = logging.getLogger(__name__)
 
 @app.middleware("http")
 async def catch_exceptions_mw(request: Request, call_next):
     try:
         return await call_next(request)
     except Exception as e:
-        tb = traceback.format_exc()
-        print("\n===== SERVER EXCEPTION =====\n", tb, "\n============================\n")
-        sentry_sdk.capture_exception(e)
-        return JSONResponse(status_code=500, content={"detail": "internal_error", "error": str(e)})
+        logger.error(
+            "Unhandled exception",
+            exc_info=True,
+            extra={"path": str(request.url.path)},
+        )
+        if SENTRY_ENABLED:
+            return JSONResponse(status_code=500, content={"detail": "internal_error"})
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "internal_error", "error": str(e)},
+        )
 
 from sqlalchemy import text
 from db.session import engine
