@@ -15,6 +15,18 @@ The pipeline runs entirely on **Anthropic Claude** (claude-sonnet-4-6 / claude-h
 
 Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
 
+## Current Milestone: v1.3 Sentry Deep Integration
+
+**Goal:** Instrument all main API endpoints with structured info/warning/error logging that flows to Sentry with correlation_id per request — production-only, opt-in via env var.
+
+**Target features:**
+- `SENTRY_ENABLED` env var gates all Sentry initialization (defaults false — local dev never sends events)
+- Request-scoped correlation_id middleware — UUID generated per request, propagated through all downstream log calls
+- Sentry scope binding — session_id, user_id, endpoint, and correlation_id attached as context on every Sentry event
+- Replace all `print()` with `logger.*` in `api/chat.py`, `core/pipeline_langgraph.py`, `agents/tools/retrieval_tools.py`, `api/reference.py`
+- Consistent info/warning/error coverage across all main APIs (agentic chat, references, hikmah, primers)
+- Standardize hikmah and primers (already partially logged) to use the same context field pattern
+
 ## Requirements
 
 ### Validated
@@ -62,7 +74,7 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ### Active
 
-*(Next milestone requirements go here — defined during /gsd:new-milestone)*
+*(v1.3 requirements — defined below in REQUIREMENTS.md)*
 
 ### Out of Scope
 
@@ -145,4 +157,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-10 after v1.2 milestone — OpenAI → Anthropic Claude + HuggingFace migration complete; 12 phases, 24 plans across 3 milestones*
+*Last updated: 2026-04-26 — v1.3 Sentry Deep Integration milestone started*

@@ -1,45 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Claude Migration
-status: complete
-stopped_at: v1.2 milestone complete
-last_updated: "2026-04-21"
-last_activity: 2026-04-21
+milestone: v1.3
+milestone_name: Sentry Deep Integration
+status: planning
+stopped_at: defining requirements
+last_updated: "2026-04-26"
+last_activity: 2026-04-26
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-10 after v1.2 milestone)
+See: .planning/PROJECT.md (updated 2026-04-26 after v1.3 milestone started)
 
 **Core value:** Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
-**Current focus:** Planning next milestone
+**Current focus:** v1.3 Sentry Deep Integration
 
 ## Current Position
 
-Phase: v1.2 complete
-Status: Milestone shipped — ready for next milestone planning
-Last activity: 2026-04-22 - Completed quick task 260421-uma: Set up Sentry SDK for error tracking and structured logging
-
-Progress: [██████████] 100%  (5/5 phases, 9/9 plans complete)
-
-## v1.2 Summary
-
-| Phase | Goal | Requirements | Status |
-|-------|------|--------------|--------|
-| 8. Config + Dependencies | App boots with Claude credentials; packages swapped | CONF-01..07 | ✓ Complete 2026-04-09 |
-| 9. LLM Swap | All LLM calls use ChatAnthropic; streaming works | LLM-01..07 | ✓ Complete 2026-04-10 |
-| 10. Embedding Migration | pgvector columns 768-dim; HuggingFace backfill; alembic clean | EMBED-01..05 | ✓ Complete 2026-04-10 |
-| 11. Dead Code Cleanup | Zero openai references; test suite passes | CLEAN-03..04 | ✓ Complete 2026-04-10 |
-| 12. Docs & Reference Cleanup | All docs/comments/docstrings reflect Claude + HuggingFace | CLEAN-05..06 | ✓ Complete 2026-04-10 |
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-26 — Milestone v1.3 started
 
 ## Accumulated Context
 
@@ -64,6 +53,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-22
-Stopped at: Completed quick task 260421-uma: Sentry SDK setup
-Next action: /gsd:new-milestone — start next milestone planning
+Last session: 2026-04-26
+Stopped at: Starting v1.3 milestone — Sentry Deep Integration
+Next action: /gsd-plan-phase 13 — plan first phase
