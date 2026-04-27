@@ -13,7 +13,11 @@ from core.auth import auth
 from core.memory import make_history
 from agents.config.agent_config import AgentConfig
 from services import chat_persistence_service
-import traceback
+import logging
+from core.context import correlation_id as correlation_id_ctx
+from core.sentry import bind_sentry_scope
+
+logger = logging.getLogger(__name__)
 
 chat_router = APIRouter(
     prefix="/chat",
@@ -113,9 +117,11 @@ async def chat_pipeline_stream_ep(
             session_id=session_id,
         )
     except Exception as e:
-        # Log internally; keep response generic
-        print("UNHANDLED ERROR in /chat/stream:", e)
-        traceback.print_exc()
+        logger.error(
+            "Unhandled error in /chat/stream",
+            exc_info=True,
+            extra={"correlation_id": correlation_id_ctx.get(), "endpoint": "/chat/stream"},
+        )
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
@@ -151,18 +157,30 @@ async def chat_pipeline_agentic_ep(
     Returns:
       Streaming response with AI-generated answer and references
     """
+    corr_id = correlation_id_ctx.get()
     user_query = (request.user_query or "").strip()
     session_id = (getattr(request, "session_id", "") or "").strip()
     target_language = (getattr(request, "language", "") or "english").strip()
     config_dict = getattr(request, "config", None)
-    
+
     if not user_query:
         raise HTTPException(status_code=400, detail="Please provide an appropriate query.")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session_id")
-    
+
     try:
         user_id = _extract_user_id(credentials)
+        bind_sentry_scope(corr_id, "/chat/stream/agentic", session_id=session_id, user_id=user_id)
+        logger.info(
+            "Agentic stream request accepted",
+            extra={
+                "correlation_id": corr_id,
+                "session_id": session_id,
+                "endpoint": "/chat/stream/agentic",
+                "user_id": user_id,
+                "query_length": len(user_query),
+            },
+        )
         runtime_session_id = session_id
         if user_id:
             runtime_session_id = chat_persistence_service.hydrate_runtime_history_if_empty(
@@ -183,15 +201,31 @@ async def chat_pipeline_agentic_ep(
             try:
                 agent_config = AgentConfig.from_dict(config_dict)
             except Exception as e:
-                print(f"[AGENTIC ENDPOINT] Config parse error: {e}")
-                # Continue with default config
-        
+                logger.warning(
+                    "Config parse error, using default config",
+                    extra={
+                        "correlation_id": corr_id,
+                        "session_id": session_id,
+                        "endpoint": "/chat/stream/agentic",
+                    },
+                )
+
         # Returns a StreamingResponse from the agentic pipeline
         response = await pipeline_langgraph.chat_pipeline_streaming_agentic(
             user_query=user_query,
             session_id=runtime_session_id,
             target_language=target_language,
             config=agent_config
+        )
+
+        logger.info(
+            "Agentic stream response assembled, returning stream",
+            extra={
+                "correlation_id": corr_id,
+                "session_id": session_id,
+                "endpoint": "/chat/stream/agentic",
+                "user_id": user_id,
+            },
         )
 
         if not user_id:
@@ -204,9 +238,16 @@ async def chat_pipeline_agentic_ep(
             session_id=session_id,
         )
     except Exception as e:
-        # Log internally; keep response generic
-        print("UNHANDLED ERROR in /chat/stream/agentic:", e)
-        traceback.print_exc()
+        logger.error(
+            "Unhandled error in /chat/stream/agentic",
+            exc_info=True,
+            extra={
+                "correlation_id": corr_id,
+                "session_id": session_id,
+                "endpoint": "/chat/stream/agentic",
+                "user_id": user_id,
+            },
+        )
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
@@ -222,16 +263,30 @@ async def chat_pipeline_agentic_non_stream_ep(
     
     Expects same format as /stream/agentic but returns JSON instead of streaming.
     """
+    corr_id = correlation_id_ctx.get()
+    user_id = _extract_user_id(credentials)
     user_query = (request.user_query or "").strip()
     session_id = (getattr(request, "session_id", "") or "").strip()
     target_language = (getattr(request, "language", "") or "english").strip()
     config_dict = getattr(request, "config", None)
-    
+
     if not user_query:
         raise HTTPException(status_code=400, detail="Please provide an appropriate query.")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session_id")
-    
+
+    bind_sentry_scope(corr_id, "/chat/agentic", session_id=session_id, user_id=user_id)
+    logger.info(
+        "Agentic request accepted",
+        extra={
+            "correlation_id": corr_id,
+            "session_id": session_id,
+            "endpoint": "/chat/agentic",
+            "user_id": user_id,
+            "query_length": len(user_query),
+        },
+    )
+
     try:
         # Parse config if provided
         agent_config = None
@@ -239,8 +294,15 @@ async def chat_pipeline_agentic_non_stream_ep(
             try:
                 agent_config = AgentConfig.from_dict(config_dict)
             except Exception as e:
-                print(f"[AGENTIC ENDPOINT] Config parse error: {e}")
-        
+                logger.warning(
+                    "Config parse error, using default config",
+                    extra={
+                        "correlation_id": corr_id,
+                        "session_id": session_id,
+                        "endpoint": "/chat/agentic",
+                    },
+                )
+
         # Get response from agentic pipeline
         result = pipeline_langgraph.chat_pipeline_agentic(
             user_query=user_query,
@@ -248,11 +310,29 @@ async def chat_pipeline_agentic_non_stream_ep(
             target_language=target_language,
             config=agent_config
         )
-        
+
+        logger.info(
+            "Agentic request completed",
+            extra={
+                "correlation_id": corr_id,
+                "session_id": session_id,
+                "endpoint": "/chat/agentic",
+                "user_id": user_id,
+            },
+        )
+
         return result
     except Exception as e:
-        print("UNHANDLED ERROR in /chat/agentic:", e)
-        traceback.print_exc()
+        logger.error(
+            "Unhandled error in /chat/agentic",
+            exc_info=True,
+            extra={
+                "correlation_id": corr_id,
+                "session_id": session_id,
+                "endpoint": "/chat/agentic",
+                "user_id": user_id,
+            },
+        )
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
