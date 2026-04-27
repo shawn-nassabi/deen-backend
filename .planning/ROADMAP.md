@@ -49,7 +49,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 <summary>🔄 v1.3 Sentry Deep Integration (Phases 13-16) — IN PROGRESS</summary>
 
 - [x] **Phase 13: Sentry Infrastructure** - correlation_id middleware, SENTRY_ENABLED gate, PII scrubber, LoggingIntegration (2/2 plans) — completed 2026-04-26
-- [ ] **Phase 14: Route Layer Instrumentation** - structured logging for chat, reference, hikmah, and primers APIs
+- [x] **Phase 14: Route Layer Instrumentation** - structured logging for chat, reference, hikmah, and primers APIs (3/3 plans) — completed 2026-04-26
 - [ ] **Phase 15: Pipeline and Tools Instrumentation** - structured logging for core pipeline and agent tools
 - [ ] **Phase 16: Fiqh Sub-graph Instrumentation** - structured warnings and searchable fields in fiqh FAIR-RAG loop
 
@@ -91,7 +91,7 @@ Plans:
 - [x] 14-02-PLAN.md — Instrument api/primers.py (convert all f-string logs to extra={}, inject correlation_id, remove traceback.print_exc())
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 14-03-PLAN.md — Instrument api/chat.py (add logger, wire bind_sentry_scope, add start/completion INFO logs for both agentic endpoints, config parse at WARNING, remove all print()+traceback)
+- [x] 14-03-PLAN.md — Instrument api/chat.py (add logger, wire bind_sentry_scope, add start/completion INFO logs for both agentic endpoints, config parse at WARNING, remove all print()+traceback)
 
 ### Phase 15: Pipeline and Tools Instrumentation
 **Goal**: The core LangGraph pipeline and all agent tools emit structured logs via `logger.*` — no remaining `print()` calls, and pipeline exceptions are captured in Sentry without duplication
@@ -132,6 +132,6 @@ Plans:
 | 11. Dead Code Cleanup | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
 | 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
-| 14. Route Layer Instrumentation | v1.3 | 2/3 | In progress | - |
+| 14. Route Layer Instrumentation | v1.3 | 3/3 | Complete | 2026-04-26 |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 0/? | Not started | - |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/? | Not started | - |
