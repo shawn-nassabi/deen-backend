@@ -48,7 +48,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 <details open>
 <summary>🔄 v1.3 Sentry Deep Integration (Phases 13-16) — IN PROGRESS</summary>
 
-- [ ] **Phase 13: Sentry Infrastructure** - correlation_id middleware, SENTRY_ENABLED gate, PII scrubber, LoggingIntegration
+- [x] **Phase 13: Sentry Infrastructure** - correlation_id middleware, SENTRY_ENABLED gate, PII scrubber, LoggingIntegration (2/2 plans) — completed 2026-04-26
 - [ ] **Phase 14: Route Layer Instrumentation** - structured logging for chat, reference, hikmah, and primers APIs
 - [ ] **Phase 15: Pipeline and Tools Instrumentation** - structured logging for core pipeline and agent tools
 - [ ] **Phase 16: Fiqh Sub-graph Instrumentation** - structured warnings and searchable fields in fiqh FAIR-RAG loop
@@ -83,7 +83,12 @@ Plans:
   3. No `print()` call exists in `api/chat.py`, `api/reference.py`, or `api/hikmah.py` — grep returns zero results
   4. A request to `/references` that triggers an internal exception returns an HTTP 500 with `{"detail": "internal_error"}` — the raw exception message is not present in the response body
   5. Log events from `api/hikmah.py` and `api/primers.py` include `correlation_id` and domain fields (`lesson_id`, `user_id` etc.) as top-level `extra={}` keys, not embedded in f-string message text
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 14-01-PLAN.md — Instrument api/reference.py (add logger, fix REF-02 data-leak, remove print()) and api/hikmah.py (inject correlation_id into all extra={} calls, remove print()+traceback)
+- [ ] 14-02-PLAN.md — Instrument api/primers.py (convert all f-string logs to extra={}, inject correlation_id, remove traceback.print_exc())
+- [ ] 14-03-PLAN.md — Instrument api/chat.py (add logger, wire bind_sentry_scope, add start/completion INFO logs for both agentic endpoints, config parse at WARNING, remove all print()+traceback)
 
 ### Phase 15: Pipeline and Tools Instrumentation
 **Goal**: The core LangGraph pipeline and all agent tools emit structured logs via `logger.*` — no remaining `print()` calls, and pipeline exceptions are captured in Sentry without duplication
@@ -124,6 +129,6 @@ Plans:
 | 11. Dead Code Cleanup | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
 | 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
-| 14. Route Layer Instrumentation | v1.3 | 0/? | Not started | - |
+| 14. Route Layer Instrumentation | v1.3 | 0/3 | Not started | - |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 0/? | Not started | - |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/? | Not started | - |
