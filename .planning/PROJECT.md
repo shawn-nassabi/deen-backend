@@ -90,13 +90,13 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.3 in progress (Phase 13 complete 2026-04-26)** — Sentry infrastructure foundation shipped.
+**v1.3 in progress (Phase 14 complete 2026-04-26)** — Route layer instrumentation shipped.
 
-- 13 phases, 26 plans across 4 milestones
+- 14 phases, 29 plans across 4 milestones
 - Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
 - Phase 13 complete: `core/sentry.py` (SDK init gate), `core/context.py` (correlation_id ContextVar), `core/middleware.py` (CorrelationIdMiddleware), wired into `main.py`
-- sentry-sdk upgraded to 2.35.2 — Sentry Logs enabled via top-level `enable_logs=True`
-- Next: Phase 14 route-layer instrumentation
+- Phase 14 complete: `api/reference.py`, `api/hikmah.py`, `api/primers.py`, `api/chat.py` — all instrumented with structured `extra={}` logging, correlation_id in every log call, `bind_sentry_scope()` wired after JWT extraction, all `print()` removed, REF-02 data-leak fixed (`detail="internal_error"`)
+- Next: Phase 15 — pipeline and tools instrumentation (core/pipeline_langgraph.py, agents/tools/)
 
 **Known tech debt (non-blocking):**
 - Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run in CI — runtime environment confirmation only
@@ -139,6 +139,10 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 | HuggingFace over Voyage AI for embeddings | all-mpnet-base-v2 already installed, free, no API key needed; Voyage AI costs money and adds dependency | ✓ 768-dim vectors, zero additional cost or API key requirement |
 | with_structured_output for fiqh classifier | Claude returns preamble text before JSON; structured output bypasses parsing fragility | ✓ Preamble-safe classification in Phase 9 |
 | AIMessage filter before LLM history | Claude errors on consecutive tool-call messages without intermediate assistant turn | ✓ D-08 filter in `_agent_node` prevents tool-call sequence crashes |
+| Side-effect import for Sentry init (`import core.sentry`) | Keeps main.py clean; module-level init fires once at import time via Python's sys.modules caching | ✓ No `sentry_sdk.init()` in main.py; init guaranteed single-fire by import machinery |
+| logger.error(exc_info=True) over capture_exception() | LoggingIntegration auto-captures ERROR log events — calling both creates duplicate Sentry events | ✓ `capture_exception()` removed from catch_exceptions_mw; zero duplicate events |
+| Never read incoming X-Correlation-ID header | D-03 threat: clients could inject forged IDs to manipulate Sentry trace correlation | ✓ CorrelationIdMiddleware generates server-side UUID only; client header ignored |
+| FastApiIntegration excluded from integrations list | sentry-sdk[fastapi] auto-enables FastApiIntegration; explicit inclusion causes duplicate setup | ✓ No FastApiIntegration in integrations=[...] list |
 
 ## Constraints
 
@@ -158,4 +162,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-26 — v1.3 Sentry Deep Integration milestone started*
+*Last updated: 2026-04-26 — Phase 14 complete (Route Layer Instrumentation shipped)*
