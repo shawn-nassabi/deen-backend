@@ -87,8 +87,8 @@ Plans:
 
 Plans:
 **Wave 1**
-- [ ] 14-01-PLAN.md — Instrument api/reference.py (add logger, fix REF-02 data-leak, remove print()) and api/hikmah.py (inject correlation_id into all extra={} calls, remove print()+traceback)
-- [ ] 14-02-PLAN.md — Instrument api/primers.py (convert all f-string logs to extra={}, inject correlation_id, remove traceback.print_exc())
+- [x] 14-01-PLAN.md — Instrument api/reference.py (add logger, fix REF-02 data-leak, remove print()) and api/hikmah.py (inject correlation_id into all extra={} calls, remove print()+traceback)
+- [x] 14-02-PLAN.md — Instrument api/primers.py (convert all f-string logs to extra={}, inject correlation_id, remove traceback.print_exc())
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 14-03-PLAN.md — Instrument api/chat.py (add logger, wire bind_sentry_scope, add start/completion INFO logs for both agentic endpoints, config parse at WARNING, remove all print()+traceback)
@@ -132,6 +132,6 @@ Plans:
 | 11. Dead Code Cleanup | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
 | 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
-| 14. Route Layer Instrumentation | v1.3 | 0/3 | Not started | - |
+| 14. Route Layer Instrumentation | v1.3 | 2/3 | In progress | - |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 0/? | Not started | - |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/? | Not started | - |
