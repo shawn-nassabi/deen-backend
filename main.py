@@ -16,6 +16,7 @@ from core.sentry import SENTRY_ENABLED
 import os
 
 from db.session import engine, Base          # for optional table bootstrap
+from sqlalchemy import text
 from db.routers import (
     lessons as lessons_router,
     lesson_content as lesson_content_router,
@@ -108,9 +109,6 @@ async def catch_exceptions_mw(request: Request, call_next):
                 content={"detail": "internal_error", "error": str(e)},
             )
         return JSONResponse(status_code=500, content={"detail": "internal_error"})
-
-from sqlalchemy import text
-from db.session import engine
 
 @app.get("/_debug/db")
 def db_ping():
