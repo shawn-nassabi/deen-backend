@@ -86,8 +86,11 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
+**Wave 1**
 - [ ] 14-01-PLAN.md — Instrument api/reference.py (add logger, fix REF-02 data-leak, remove print()) and api/hikmah.py (inject correlation_id into all extra={} calls, remove print()+traceback)
 - [ ] 14-02-PLAN.md — Instrument api/primers.py (convert all f-string logs to extra={}, inject correlation_id, remove traceback.print_exc())
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 14-03-PLAN.md — Instrument api/chat.py (add logger, wire bind_sentry_scope, add start/completion INFO logs for both agentic endpoints, config parse at WARNING, remove all print()+traceback)
 
 ### Phase 15: Pipeline and Tools Instrumentation
