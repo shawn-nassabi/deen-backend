@@ -13,6 +13,10 @@ from fastapi.responses import StreamingResponse
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.core.chat_agent import ChatAgent
 from core import utils
+import logging
+from core.context import correlation_id as correlation_id_ctx
+
+logger = logging.getLogger(__name__)
 
 
 # Human-readable status messages for each agent node.
@@ -87,7 +91,11 @@ async def chat_pipeline_streaming_agentic(
       - error:             {"message": str}                -- on any error
       - done:              {}                              -- final event
     """
-    print(f"[AGENTIC PIPELINE] Starting for query: {user_query[:100]}")
+    logger.info("Pipeline started", extra={
+        "correlation_id": correlation_id_ctx.get(),
+        "session_id": session_id,
+        "target_language": target_language,
+    })
 
     agent_config = config or DEFAULT_AGENT_CONFIG
     agent = ChatAgent(agent_config)
@@ -119,7 +127,7 @@ async def chat_pipeline_streaming_agentic(
                 streaming_mode=True
             ):
                 for node_name, node_state in event.items():
-                    print(f"[AGENTIC PIPELINE] Node: {node_name}")
+                    logger.debug("Node traversal", extra={"correlation_id": correlation_id_ctx.get(), "node": node_name})
                     final_state = node_state
 
                     # Emit the node-arrival status event (may be None for 'tools'
@@ -373,9 +381,10 @@ async def chat_pipeline_streaming_agentic(
             yield sse_event("done", {})
 
         except Exception as e:
-            print(f"[AGENTIC PIPELINE] Error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Pipeline error", exc_info=True, extra={
+                "correlation_id": correlation_id_ctx.get(),
+                "session_id": session_id,
+            })
             if assistant_text and not history_written:
                 try:
                     from services import chat_persistence_service
@@ -386,7 +395,10 @@ async def chat_pipeline_streaming_agentic(
                         assistant_text=assistant_text,
                     )
                 except Exception as memory_exc:
-                    print(f"[AGENTIC PIPELINE] Failed to append runtime history after error: {memory_exc}")
+                    logger.warning("Failed to append runtime history after error", exc_info=True, extra={
+                        "correlation_id": correlation_id_ctx.get(),
+                        "session_id": session_id,
+                    })
             yield sse_event("error", {"message": str(e)})
             yield sse_event("done", {})
 
@@ -411,7 +423,11 @@ def chat_pipeline_agentic(
     Returns:
         Dictionary with response and metadata
     """
-    print(f"[AGENTIC PIPELINE NON-STREAM] Starting for query: {user_query[:100]}")
+    logger.info("Pipeline started", extra={
+        "correlation_id": correlation_id_ctx.get(),
+        "session_id": session_id,
+        "target_language": target_language,
+    })
 
     agent_config = config or DEFAULT_AGENT_CONFIG
     agent = ChatAgent(agent_config)
