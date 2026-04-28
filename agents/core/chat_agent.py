@@ -6,7 +6,6 @@ Shia hadith, Sunni hadith, and Quran/Tafsir evidence per query.
 """
 
 import json
-import logging
 from typing import Any, Dict, List, Literal
 
 from langchain_anthropic import ChatAnthropic
@@ -18,6 +17,7 @@ from langgraph.prebuilt import ToolNode
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.prompts.agent_prompts import (
     AGENT_SYSTEM_PROMPT,
+    EARLY_EXIT_FIQH,
 )
 from agents.state.chat_state import ChatState
 from agents.tools import (
@@ -30,6 +30,7 @@ from agents.tools import (
 )
 from core import utils
 from core.config import ANTHROPIC_API_KEY
+import logging
 from core.context import correlation_id as correlation_id_ctx
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ class ChatAgent:
                 "classification_checked": True,
             }
         except Exception as exc:
-            logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": f"{type(exc).__name__}: {str(exc)[:120]}"})
+            logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return {
                 "fiqh_category": "",
                 "is_fiqh": False,
@@ -173,7 +174,7 @@ class ChatAgent:
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
         except Exception as exc:
-            logger.error("Agent node error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": f"{type(exc).__name__}: {str(exc)[:120]}"})
+            logger.error("Agent node error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             state["errors"].append(f"Agent error: {str(exc)}")
             state["should_end"] = True
 
