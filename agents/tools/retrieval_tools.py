@@ -60,7 +60,7 @@ def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str
     except Exception as e:
         logger.error("Retrieval error", exc_info=True, extra={
             "correlation_id": correlation_id_ctx.get(),
-            "error": str(e),
+            "error": f"{type(e).__name__}: {str(e)[:120]}",
         })
         return {
             "documents": [],
@@ -122,7 +122,7 @@ def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[st
     except Exception as e:
         logger.error("Retrieval error", exc_info=True, extra={
             "correlation_id": correlation_id_ctx.get(),
-            "error": str(e),
+            "error": f"{type(e).__name__}: {str(e)[:120]}",
         })
         return {
             "documents": [],
@@ -183,7 +183,7 @@ def retrieve_combined_documents_tool(
     except Exception as e:
         logger.error("Retrieval error", exc_info=True, extra={
             "correlation_id": correlation_id_ctx.get(),
-            "error": str(e),
+            "error": f"{type(e).__name__}: {str(e)[:120]}",
         })
         return {
             "documents": [],
@@ -246,7 +246,7 @@ def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, 
     except Exception as e:
         logger.error("Retrieval error", exc_info=True, extra={
             "correlation_id": correlation_id_ctx.get(),
-            "error": str(e),
+            "error": f"{type(e).__name__}: {str(e)[:120]}",
         })
         return {
             "documents": [],

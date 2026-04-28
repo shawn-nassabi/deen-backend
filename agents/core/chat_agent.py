@@ -116,7 +116,7 @@ class ChatAgent:
                 "classification_checked": True,
             }
         except Exception as exc:
-            logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": f"{type(exc).__name__}: {str(exc)[:120]}"})
             return {
                 "fiqh_category": "",
                 "is_fiqh": False,
@@ -173,7 +173,7 @@ class ChatAgent:
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
         except Exception as exc:
-            logger.error("Agent node error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            logger.error("Agent node error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": f"{type(exc).__name__}: {str(exc)[:120]}"})
             state["errors"].append(f"Agent error: {str(exc)}")
             state["should_end"] = True
 
