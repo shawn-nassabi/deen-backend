@@ -105,8 +105,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 15-01-PLAN.md — Instrument core/pipeline_langgraph.py (5 print() → logger.*) and agents/tools/retrieval_tools.py (4 print() → logger.error)
-- [ ] 15-02-PLAN.md — Instrument agents/core/chat_agent.py (~20 print() → logger.debug/error across 9 methods)
+- [x] 15-01-PLAN.md — Instrument core/pipeline_langgraph.py (5 print() → logger.*) and agents/tools/retrieval_tools.py (4 print() → logger.error)
+- [x] 15-02-PLAN.md — Instrument agents/core/chat_agent.py (~20 print() → logger.debug/error across 9 methods)
 
 ### Phase 16: Fiqh Sub-graph Instrumentation
 **Goal**: The FAIR-RAG loop emits structured, searchable warnings at every meaningful failure boundary — zero-doc retrievals, total evidence loss, and iteration exhaustion are all visible in Sentry
@@ -137,5 +137,5 @@ Plans:
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
 | 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
 | 14. Route Layer Instrumentation | v1.3 | 3/3 | Complete | 2026-04-26 |
-| 15. Pipeline and Tools Instrumentation | v1.3 | 0/2 | Not started | - |
+| 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete   | 2026-04-28 |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/? | Not started | - |
