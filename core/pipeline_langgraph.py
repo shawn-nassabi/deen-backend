@@ -432,12 +432,19 @@ def chat_pipeline_agentic(
     agent_config = config or DEFAULT_AGENT_CONFIG
     agent = ChatAgent(agent_config)
 
-    final_state = agent.invoke(
-        user_query=user_query,
-        session_id=session_id,
-        target_language=target_language,
-        config=agent_config.to_dict()
-    )
+    try:
+        final_state = agent.invoke(
+            user_query=user_query,
+            session_id=session_id,
+            target_language=target_language,
+            config=agent_config.to_dict()
+        )
+    except Exception:
+        logger.error("Pipeline error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "session_id": session_id,
+        })
+        raise
 
     response_data = {
         "response": final_state.get("final_response", "Unable to generate response"),
