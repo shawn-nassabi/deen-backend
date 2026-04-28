@@ -6,6 +6,7 @@ that decides which tools to use and when.
 """
 
 import json
+import logging
 from typing import AsyncGenerator, Optional
 
 from fastapi.responses import StreamingResponse
@@ -13,7 +14,6 @@ from fastapi.responses import StreamingResponse
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.core.chat_agent import ChatAgent
 from core import utils
-import logging
 from core.context import correlation_id as correlation_id_ctx
 
 logger = logging.getLogger(__name__)

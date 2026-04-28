@@ -3,11 +3,13 @@ Retrieval tools for the LangGraph agent.
 These tools fetch relevant documents from the knowledge base.
 """
 
-from langchain_core.tools import tool
-from modules.retrieval import retriever
-from typing import Dict, List
 import logging
+from typing import Dict, List
+
+from langchain_core.tools import tool
+
 from core.context import correlation_id as correlation_id_ctx
+from modules.retrieval import retriever
 
 logger = logging.getLogger(__name__)
 

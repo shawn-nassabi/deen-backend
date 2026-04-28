@@ -6,6 +6,7 @@ Shia hadith, Sunni hadith, and Quran/Tafsir evidence per query.
 """
 
 import json
+import logging
 from typing import Any, Dict, List, Literal
 
 from langchain_anthropic import ChatAnthropic
@@ -29,7 +30,6 @@ from agents.tools import (
 )
 from core import utils
 from core.config import ANTHROPIC_API_KEY
-import logging
 from core.context import correlation_id as correlation_id_ctx
 
 logger = logging.getLogger(__name__)
