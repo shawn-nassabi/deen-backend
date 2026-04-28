@@ -17,7 +17,6 @@ from langgraph.prebuilt import ToolNode
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.prompts.agent_prompts import (
     AGENT_SYSTEM_PROMPT,
-    EARLY_EXIT_FIQH,
 )
 from agents.state.chat_state import ChatState
 from agents.tools import (
