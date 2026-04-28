@@ -90,12 +90,12 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.3 in progress (Phase 14 complete 2026-04-26)** — Route layer instrumentation shipped.
+**v1.3 in progress (Phase 15 complete 2026-04-26)** — Route layer instrumentation shipped.
 
 - 14 phases, 29 plans across 4 milestones
 - Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
 - Phase 13 complete: `core/sentry.py` (SDK init gate), `core/context.py` (correlation_id ContextVar), `core/middleware.py` (CorrelationIdMiddleware), wired into `main.py`
-- Phase 14 complete: `api/reference.py`, `api/hikmah.py`, `api/primers.py`, `api/chat.py` — all instrumented with structured `extra={}` logging, correlation_id in every log call, `bind_sentry_scope()` wired after JWT extraction, all `print()` removed, REF-02 data-leak fixed (`detail="internal_error"`)
+- Phase 15 complete: `api/reference.py`, `api/hikmah.py`, `api/primers.py`, `api/chat.py` — all instrumented with structured `extra={}` logging, correlation_id in every log call, `bind_sentry_scope()` wired after JWT extraction, all `print()` removed, REF-02 data-leak fixed (`detail="internal_error"`)
 - Next: Phase 15 — pipeline and tools instrumentation (core/pipeline_langgraph.py, agents/tools/)
 
 **Known tech debt (non-blocking):**
@@ -162,4 +162,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-26 — Phase 14 complete (Route Layer Instrumentation shipped)*
+*Last updated: 2026-04-26 — Phase 15 complete (Route Layer Instrumentation shipped)*
