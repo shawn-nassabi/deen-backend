@@ -30,6 +30,10 @@ from agents.tools import (
 )
 from core import utils
 from core.config import ANTHROPIC_API_KEY
+import logging
+from core.context import correlation_id as correlation_id_ctx
+
+logger = logging.getLogger(__name__)
 
 
 class ChatAgent:
@@ -99,21 +103,21 @@ class ChatAgent:
         return workflow
 
     def _fiqh_classification_node(self, state: ChatState) -> dict:
-        print("[FIQH CLASSIFICATION NODE] Classifying query with 6-category classifier")
+        logger.debug("Fiqh classification started", extra={"correlation_id": correlation_id_ctx.get()})
         try:
             from modules.fiqh.classifier import classify_fiqh_query
 
             # Note: new classifier takes only query (not session_id) — Pitfall 3
             category = classify_fiqh_query(state["user_query"])
             is_fiqh = category.startswith("VALID_")
-            print(f"[FIQH CLASSIFICATION NODE] Category: {category}, is_fiqh: {is_fiqh}")
+            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": is_fiqh})
             return {
                 "fiqh_category": category,
                 "is_fiqh": is_fiqh,
                 "classification_checked": True,
             }
         except Exception as exc:
-            print(f"[FIQH CLASSIFICATION NODE] Error: {exc}")
+            logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return {
                 "fiqh_category": "",
                 "is_fiqh": False,
@@ -124,22 +128,22 @@ class ChatAgent:
     def _route_after_fiqh_check(self, state: ChatState) -> Literal["fiqh", "exit", "continue"]:
         category = state.get("fiqh_category", "")
         if category in {"VALID_OBVIOUS", "VALID_SMALL", "VALID_LARGE", "VALID_REASONER"}:
-            print(f"[ROUTING] Valid fiqh category ({category}) — routing to fiqh sub-graph")
+            logger.debug("Routing to fiqh sub-graph", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category})
             return "fiqh"
         if category == "UNETHICAL":
-            print(f"[ROUTING] Unethical query — routing to early exit")
+            logger.debug("Routing to early exit: unethical query", extra={"correlation_id": correlation_id_ctx.get()})
             return "exit"
         # OUT_OF_SCOPE_FIQH = general Islamic question (history, theology, etc.)
         # — let the regular hadith/Quran agent handle it
-        print("[ROUTING] Not a fiqh query — routing to agent")
+        logger.debug("Routing to agent: not a fiqh query", extra={"correlation_id": correlation_id_ctx.get()})
         return "continue"
 
     def _agent_node(self, state: ChatState) -> ChatState:
-        print(f"[AGENT NODE] Iteration {state['iterations']}")
+        logger.debug("Agent node iteration", extra={"correlation_id": correlation_id_ctx.get(), "iteration": state["iterations"]})
 
         state["iterations"] += 1
         if state["iterations"] > self.config.max_iterations:
-            print(f"[AGENT NODE] Max iterations reached ({self.config.max_iterations})")
+            logger.debug("Max iterations reached", extra={"correlation_id": correlation_id_ctx.get(), "max_iterations": self.config.max_iterations})
             state["should_end"] = True
             state["errors"].append(f"Max iterations ({self.config.max_iterations}) reached")
             return state
@@ -169,23 +173,19 @@ class ChatAgent:
             state["messages"].append(response)
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
-            print(
-                "[AGENT NODE] Agent response:",
-                response.content if hasattr(response, "content") else "tool calls",
-            )
         except Exception as exc:
-            print(f"[AGENT NODE] Error: {exc}")
+            logger.error("Agent node error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             state["errors"].append(f"Agent error: {str(exc)}")
             state["should_end"] = True
 
         return state
 
     def _tool_node(self, state: ChatState) -> ChatState:
-        print("[TOOL NODE] Executing tools")
+        logger.debug("Tool node executing", extra={"correlation_id": correlation_id_ctx.get()})
         last_message = state["messages"][-1] if state["messages"] else None
 
         if last_message is None or not getattr(last_message, "tool_calls", None):
-            print("[TOOL NODE] No tool calls found")
+            logger.debug("Tool node: no tool calls found", extra={"correlation_id": correlation_id_ctx.get()})
             return state
 
         self._apply_tool_call_defaults(state, last_message.tool_calls)
@@ -199,7 +199,7 @@ class ChatAgent:
 
             tool_name = message.name
             result_data = self._parse_tool_payload(message.content)
-            print(f"[TOOL NODE] Tool {tool_name} result: {str(result_data)[:200]}")
+            logger.debug("Tool executed", extra={"correlation_id": correlation_id_ctx.get(), "tool_name": tool_name})
 
             if tool_name == "check_if_non_islamic_tool":
                 state["is_non_islamic"] = result_data.get("is_non_islamic", False)
@@ -236,7 +236,7 @@ class ChatAgent:
         return state
 
     def _generate_response_node(self, state: ChatState) -> ChatState:
-        print("[GENERATE RESPONSE NODE] Generating final response")
+        logger.debug("Generating final response", extra={"correlation_id": correlation_id_ctx.get()})
 
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
@@ -259,16 +259,16 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             response = llm.invoke(generation_messages)
             state["final_response"] = response.content
             state["response_generated"] = True
-            print(f"[GENERATE RESPONSE NODE] Response generated: {len(response.content)} chars")
+            logger.debug("Response generated", extra={"correlation_id": correlation_id_ctx.get(), "response_chars": len(response.content)})
         except Exception as exc:
-            print(f"[GENERATE RESPONSE NODE] Error: {exc}")
+            logger.error("Response generation error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             state["errors"].append(f"Response generation error: {str(exc)}")
             state["final_response"] = "I apologize, but I encountered an error generating the response."
 
         return state
 
     def _check_early_exit_node(self, state: ChatState) -> dict:
-        print("[CHECK EARLY EXIT NODE]")
+        logger.debug("Check early exit node", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC
 
         if state.get("is_non_islamic"):
@@ -294,7 +294,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                 response = model.invoke([HumanMessage(content=prompt_text)])
                 msg = response.content.strip()
             except Exception as exc:
-                print(f"[CHECK EARLY EXIT NODE] LLM rejection error: {exc}")
+                logger.error("LLM rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
                 msg = (
                     "I'm unable to answer this question as it involves something harmful or unethical."
                 )
@@ -308,7 +308,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         Projects ChatState -> FiqhState input, invokes sub-graph, maps output -> ChatState delta.
         Uses Pattern 1 (node wrapper) because ChatState and FiqhState share no keys.
         """
-        print(f"[FIQH SUBGRAPH NODE] Invoking FAIR-RAG sub-graph for: {state['user_query'][:80]}")
+        logger.debug("Invoking FAIR-RAG sub-graph", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.fiqh.fiqh_graph import fiqh_subgraph
 
         try:
@@ -325,11 +325,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             fiqh_sea_result = result.get("sea_result")
             status_events = result.get("status_events", [])
 
-            print(
-                f"[FIQH SUBGRAPH NODE] Sub-graph complete: "
-                f"{len(fiqh_filtered_docs)} docs, verdict={result.get('verdict')}, "
-                f"{len(status_events)} status events"
-            )
+            logger.debug("Fiqh sub-graph complete", extra={"correlation_id": correlation_id_ctx.get(), "doc_count": len(fiqh_filtered_docs), "status_event_count": len(status_events)})
             return {
                 "fiqh_filtered_docs": fiqh_filtered_docs,
                 "fiqh_sea_result": fiqh_sea_result,
@@ -339,7 +335,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                 "fiqh_status_events": list(status_events),
             }
         except Exception as exc:
-            print(f"[FIQH SUBGRAPH NODE] Error: {exc}")
+            logger.error("Fiqh sub-graph error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return {
                 "fiqh_filtered_docs": [],
                 "fiqh_sea_result": None,
@@ -354,7 +350,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         The streaming path in pipeline_langgraph.py bypasses this node and streams
         tokens directly — this node serves the non-streaming (invoke) path only.
         """
-        print("[GENERATE FIQH RESPONSE NODE] Generating fiqh answer (non-streaming path)")
+        logger.debug("Generating fiqh answer (non-streaming)", extra={"correlation_id": correlation_id_ctx.get()})
         from modules.fiqh.generator import (
             _prompt,
             _format_evidence,
@@ -389,7 +385,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             answer += FATWA_DISCLAIMER
             return {"final_response": answer, "response_generated": True}
         except Exception as exc:
-            print(f"[GENERATE FIQH RESPONSE NODE] Error: {exc}")
+            logger.error("Fiqh response generation error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return {
                 "errors": state.get("errors", []) + [f"Fiqh generation error: {str(exc)}"],
                 "final_response": "Unable to generate fiqh answer." + FATWA_DISCLAIMER,
@@ -398,37 +394,37 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     def _should_continue(self, state: ChatState) -> Literal["continue", "generate", "exit", "end"]:
         if state.get("is_non_islamic") or state.get("is_fiqh"):
-            print("[ROUTING] Early exit: non-Islamic or fiqh query")
+            logger.debug("Routing: early exit", extra={"correlation_id": correlation_id_ctx.get()})
             return "exit"
 
         if state.get("should_end"):
-            print("[ROUTING] Should end flag set")
+            logger.debug("Routing: should_end flag set", extra={"correlation_id": correlation_id_ctx.get()})
             return "end"
 
         last_message = state["messages"][-1] if state["messages"] else None
         if last_message is None:
-            print("[ROUTING] No messages, ending")
+            logger.debug("Routing: no messages, ending", extra={"correlation_id": correlation_id_ctx.get()})
             return "end"
 
         if getattr(last_message, "tool_calls", None):
-            print(f"[ROUTING] Continue to tools: {len(last_message.tool_calls)} tool calls")
+            logger.debug("Routing: continue to tools", extra={"correlation_id": correlation_id_ctx.get(), "tool_call_count": len(last_message.tool_calls)})
             return "continue"
 
         if state.get("ready_to_answer") and self._has_any_documents(state):
             if state.get("streaming_mode"):
-                print("[ROUTING] Agent marked evidence sufficient - ending for streaming")
+                logger.debug("Routing: evidence sufficient, ending for streaming", extra={"correlation_id": correlation_id_ctx.get()})
                 return "end"
-            print("[ROUTING] Agent marked evidence sufficient - generating response")
+            logger.debug("Routing: evidence sufficient, generating response", extra={"correlation_id": correlation_id_ctx.get()})
             return "generate"
 
         if self._has_any_documents(state):
             if state.get("streaming_mode"):
-                print("[ROUTING] Agent stopped after retrieval - ending for streaming")
+                logger.debug("Routing: stopped after retrieval, ending for streaming", extra={"correlation_id": correlation_id_ctx.get()})
                 return "end"
-            print("[ROUTING] Agent stopped after retrieval - generating response")
+            logger.debug("Routing: stopped after retrieval, generating response", extra={"correlation_id": correlation_id_ctx.get()})
             return "generate"
 
-        print("[ROUTING] No evidence available - ending")
+        logger.debug("Routing: no evidence, ending", extra={"correlation_id": correlation_id_ctx.get()})
         return "end"
 
     def _build_initial_user_message(self, state: ChatState) -> str:
@@ -606,7 +602,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             history = make_history(session_id)
             return history.messages
         except Exception as exc:
-            print(f"[CHAT AGENT] Failed to load history for session {session_id}: {exc}")
+            logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return []
 
     def invoke(
