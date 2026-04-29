@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 import json
 import re
@@ -11,7 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.concurrency import iterate_in_threadpool
 
-from core.memory import make_history, trim_history
+from core.memory import amake_history, atrim_history, make_history, trim_history
 from db.models.chat_messages import ChatMessage
 from db.models.chat_sessions import ChatSession
 
@@ -244,6 +245,8 @@ def append_turn_to_runtime_history(
     user_query: str,
     assistant_text: str,
 ) -> None:
+    """Sync variant kept for legacy callers. Prefer
+    `aappend_turn_to_runtime_history` from inside an event loop (DEE-43)."""
     history = make_history(runtime_session_id)
     history.add_messages(
         [
@@ -252,6 +255,69 @@ def append_turn_to_runtime_history(
         ]
     )
     trim_history(history)
+
+
+async def aappend_turn_to_runtime_history(
+    *,
+    runtime_session_id: str,
+    user_query: str,
+    assistant_text: str,
+) -> None:
+    """Async-native variant. Uses redis.asyncio so Redis I/O doesn't block
+    the event loop on every concurrent agentic stream's persistence step."""
+    history = amake_history(runtime_session_id)
+    await history.aadd_messages(
+        [
+            HumanMessage(content=user_query),
+            AIMessage(content=assistant_text),
+        ]
+    )
+    await atrim_history(history)
+
+
+async def ahydrate_runtime_history_if_empty(
+    db: Session,
+    *,
+    user_id: str,
+    session_id: str,
+) -> str:
+    """Async variant of `hydrate_runtime_history_if_empty`. Reads chat history
+    from Redis without blocking the event loop; the Postgres backfill
+    queries still hit sync SQLAlchemy and are offloaded to a thread until
+    DEE-45 ships AsyncSession."""
+    runtime_session_id = build_runtime_session_id(user_id, session_id)
+    history = amake_history(runtime_session_id)
+
+    if await history.aget_messages():
+        return runtime_session_id
+
+    def _load_db_messages() -> List[Any]:
+        session_row = _get_session(db, user_id, session_id)
+        if not session_row:
+            return []
+        return list(
+            db.query(ChatMessage)
+            .filter(ChatMessage.chat_session_id == session_row.id)
+            .order_by(ChatMessage.id.asc())
+            .all()
+        )
+
+    db_messages = await asyncio.to_thread(_load_db_messages)
+    if not db_messages:
+        return runtime_session_id
+
+    langchain_messages = []
+    for message in db_messages:
+        if message.role == "user":
+            langchain_messages.append(HumanMessage(content=message.content))
+        elif message.role == "assistant":
+            langchain_messages.append(AIMessage(content=message.content))
+
+    if langchain_messages:
+        await history.aadd_messages(langchain_messages)
+        await atrim_history(history)
+
+    return runtime_session_id
 
 
 def list_sessions(
