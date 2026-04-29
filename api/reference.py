@@ -38,7 +38,7 @@ async def references_pipeline(
         raise HTTPException(status_code=400, detail="Please provide an appropriate query.")
 
     try:
-        results = pipeline.references_pipeline(user_query, sect, limit)
+        results = await pipeline.references_pipeline(user_query, sect, limit)
         logger.info(
             "References request completed",
             extra={"correlation_id": corr_id, "endpoint": "/references"},

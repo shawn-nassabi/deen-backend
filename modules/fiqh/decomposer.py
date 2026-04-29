@@ -44,9 +44,28 @@ _prompt = ChatPromptTemplate.from_messages([
 ])
 
 
+def _parse_subqueries(content: str, fallback_query: str) -> list[str]:
+    if content.startswith("```"):
+        parts = content.split("```")
+        content = parts[1] if len(parts) > 1 else content
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+    try:
+        sub_queries = json.loads(content)
+    except Exception:
+        return [fallback_query]
+    if not isinstance(sub_queries, list) or not sub_queries:
+        return [fallback_query]
+    return [str(q).strip() for q in sub_queries[:4] if str(q).strip()] or [fallback_query]
+
+
 def decompose_query(query: str) -> list[str]:
     """
-    Decomposes a fiqh query into 1-4 keyword-rich sub-queries using the configured LLM (SMALL_LLM).
+    Sync variant kept for legacy callers. Prefer `adecompose_query` from
+    inside an event loop (DEE-44).
+
+    Decomposes a fiqh query into 1-4 keyword-rich sub-queries.
     Falls back to [query] on any parse error or unexpected output.
 
     Returns:
@@ -55,17 +74,16 @@ def decompose_query(query: str) -> list[str]:
     try:
         model = chat_models.get_classifier_model()
         response = model.invoke(_prompt.format_messages(query=query))
-        content = response.content.strip()
-        # Strip markdown code fences if LLM wraps output
-        if content.startswith("```"):
-            parts = content.split("```")
-            content = parts[1] if len(parts) > 1 else content
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-        sub_queries = json.loads(content)
-        if not isinstance(sub_queries, list) or not sub_queries:
-            return [query]
-        return [str(q).strip() for q in sub_queries[:4] if str(q).strip()]
+        return _parse_subqueries(response.content.strip(), query)
+    except Exception:
+        return [query]
+
+
+async def adecompose_query(query: str) -> list[str]:
+    """Native async variant of `decompose_query`."""
+    try:
+        model = chat_models.get_classifier_model()
+        response = await model.ainvoke(_prompt.format_messages(query=query))
+        return _parse_subqueries(response.content.strip(), query)
     except Exception:
         return [query]

@@ -106,11 +106,9 @@ class ChatAgent:
     async def _fiqh_classification_node(self, state: ChatState) -> dict:
         logger.debug("Fiqh classification started", extra={"correlation_id": correlation_id_ctx.get()})
         try:
-            from modules.fiqh.classifier import classify_fiqh_query
+            from modules.fiqh.classifier import aclassify_fiqh_query
 
-            # classify_fiqh_query is sync (LLM .invoke). Phase 5 (DEE-44) makes
-            # the fiqh module natively async; until then offload to a thread.
-            category = await asyncio.to_thread(classify_fiqh_query, state["user_query"])
+            category = await aclassify_fiqh_query(state["user_query"])
             is_fiqh = category.startswith("VALID_")
             logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": is_fiqh})
             return {
@@ -313,27 +311,23 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         Projects ChatState -> FiqhState input, invokes sub-graph, maps output -> ChatState delta.
         Uses Pattern 1 (node wrapper) because ChatState and FiqhState share no keys.
 
-        The fiqh sub-graph nodes are still sync (LLM .invoke). Phase 5 (DEE-44)
-        converts them to async and lets us swap to fiqh_subgraph.ainvoke; until
-        then offload the whole subgraph call to a thread so it doesn't block
-        the parent graph's event loop for the 10-15s subgraph runtime.
+        DEE-44 made every fiqh sub-graph node `async def`, so the whole 10-15s
+        subgraph run now drives via `.ainvoke` and yields between LLM calls
+        instead of blocking the executor.
         """
         logger.debug("Invoking FAIR-RAG sub-graph", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.fiqh.fiqh_graph import fiqh_subgraph
 
         try:
-            result = await asyncio.to_thread(
-                fiqh_subgraph.invoke,
-                {
-                    "query": state["user_query"],
-                    "iteration": 0,
-                    "accumulated_docs": [],
-                    "prior_queries": [],
-                    "sea_result": None,
-                    "verdict": "INSUFFICIENT",
-                    "status_events": [],
-                },
-            )
+            result = await fiqh_subgraph.ainvoke({
+                "query": state["user_query"],
+                "iteration": 0,
+                "accumulated_docs": [],
+                "prior_queries": [],
+                "sea_result": None,
+                "verdict": "INSUFFICIENT",
+                "status_events": [],
+            })
             fiqh_filtered_docs = result.get("accumulated_docs", [])
             fiqh_sea_result = result.get("sea_result")
             status_events = result.get("status_events", [])

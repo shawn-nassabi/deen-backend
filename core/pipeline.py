@@ -1,14 +1,17 @@
+import asyncio
+from itertools import chain
+import json
+
+from fastapi.responses import StreamingResponse
+
+from core import utils
+from core.config import REFERENCE_FETCH_COUNT
 from modules.classification import classifier
 from modules.embedding import embedder
 from modules.enhancement import enhancer
 from modules.generation import generator, stream_generator
 from modules.retrieval import retriever
-from fastapi.responses import StreamingResponse
 from modules.translation import translator
-from core import utils
-from itertools import chain
-from core.config import REFERENCE_FETCH_COUNT
-import json
 
 # Not updated for memory persistence yet
 def chat_pipeline(user_query: str, session_id: str):
@@ -82,36 +85,43 @@ def chat_pipeline_streaming(user_query: str, session_id: str, target_language: s
 
 
 
-def references_pipeline(user_query: str, sect: str, limit: int = REFERENCE_FETCH_COUNT):
-    # # Step 1: Classify query (fiqh or non-fiqh)
-    is_non_islamic = classifier.classify_non_islamic_query(user_query)
+async def references_pipeline(user_query: str, sect: str, limit: int = REFERENCE_FETCH_COUNT):
+    """Async references pipeline (DEE-44). Uses native `aclassify_*`,
+    `aenhance_query`, and `aretrieve_*` so the route doesn't block the event
+    loop on classification → enhancement → retrieval → ranking."""
+    is_non_islamic = await classifier.aclassify_non_islamic_query(user_query)
     if is_non_islamic:
         return "This question is not related to the domain of Islamic education. Please ask relevant questions."
-    
-    # Step 2: Enhance query
-    enhanced_query = enhancer.enhance_query(user_query)
 
-    # Step 3: Retrieve relevant documents from Pinecone with custom limit
-    results = {}
+    enhanced_query = await enhancer.aenhance_query(user_query)
+
+    results: dict = {}
+    fetches = []
     if sect in ["shia", "both"]:
-        results["shia"] = utils.format_references_as_json(retriever.retrieve_shia_documents(enhanced_query, limit))
+        fetches.append(("shia", retriever.aretrieve_shia_documents(enhanced_query, limit)))
     if sect in ["sunni", "both"]:
-        results["sunni"] = utils.format_references_as_json(retriever.retrieve_sunni_documents(enhanced_query, limit))
+        fetches.append(("sunni", retriever.aretrieve_sunni_documents(enhanced_query, limit)))
+
+    # Run shia + sunni retrievals concurrently when both are requested.
+    fetched = await asyncio.gather(*[fut for _, fut in fetches])
+    for (label, _), docs in zip(fetches, fetched):
+        results[label] = utils.format_references_as_json(docs)
 
     return results
 
-def hikmah_elaboration_pipeline_streaming(selected_text: str, context_text: str, hikmah_tree_name: str, lesson_name: str, lesson_summary: str, user_id: str = None):
 
-    # Step 1: Retrieve relevant documents from Pinecone based on context
-    relevant_shia_docs = retriever.retrieve_shia_documents(context_text, 4)
+async def hikmah_elaboration_pipeline_streaming(selected_text: str, context_text: str, hikmah_tree_name: str, lesson_name: str, lesson_summary: str, user_id: str = None):
+    """Async hikmah elaboration streaming pipeline (DEE-44)."""
+    relevant_shia_docs = await retriever.aretrieve_shia_documents(context_text, 4)
 
-    all_relevant_docs = relevant_shia_docs
-
-    # Step 2: Stream the AI response from the LLM
-    response_generator = stream_generator.generate_elaboration_response_stream(
-        selected_text, context_text, hikmah_tree_name, lesson_name, 
-        lesson_summary, all_relevant_docs, user_id=user_id
+    response_generator = stream_generator.agenerate_elaboration_response_stream(
+        selected_text,
+        context_text,
+        hikmah_tree_name,
+        lesson_name,
+        lesson_summary,
+        relevant_shia_docs,
+        user_id=user_id,
     )
 
-    # Return a StreamingResponse with appropriate media type.
     return StreamingResponse(response_generator, media_type="text/event-stream")

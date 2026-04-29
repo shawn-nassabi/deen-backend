@@ -84,6 +84,15 @@ def _build_references_section(text: str, docs: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _post_process_answer(answer_text: str, docs: list[dict], is_sufficient: bool) -> str:
+    references = _build_references_section(answer_text, docs)
+    full_answer = answer_text + references
+    if not is_sufficient:
+        full_answer += INSUFFICIENT_WARNING
+    full_answer += FATWA_DISCLAIMER
+    return full_answer
+
+
 def generate_answer(
     query: str,
     docs: list[dict],
@@ -91,19 +100,11 @@ def generate_answer(
     is_sufficient: bool,
 ) -> str:
     """
+    Sync variant kept for legacy callers. Prefer `agenerate_answer` from
+    inside an event loop (DEE-44).
+
     Generates a fiqh answer from retrieved evidence with inline [n] citations,
     a ## Sources section, and a mandatory fatwa disclaimer.
-    Appends insufficient-evidence warning when is_sufficient=False.
-    Never raises.
-
-    Args:
-        query: The original fiqh query string
-        docs: List of doc dicts (chunk_id, metadata, page_content) — same list used for citation numbering
-        sea_result: SEAResult from assess_evidence (used for context; verdict not re-checked here)
-        is_sufficient: True if SEA declared SUFFICIENT, False otherwise
-
-    Returns:
-        str: Complete response with citations, ## Sources, fatwa disclaimer, and optional warning.
     """
     try:
         model = chat_models.get_generator_model()
@@ -111,20 +112,7 @@ def generate_answer(
             query=query,
             evidence=_format_evidence(docs),
         ))
-        answer_text = response.content.strip()
-
-        # Post-process: build references section from [n] tokens in the response
-        references = _build_references_section(answer_text, docs)
-        full_answer = answer_text + references
-
-        # Append insufficient-evidence warning before disclaimer when evidence is incomplete
-        if not is_sufficient:
-            full_answer += INSUFFICIENT_WARNING
-
-        # Always append fatwa disclaimer (per D-20, AGEN-04)
-        full_answer += FATWA_DISCLAIMER
-
-        return full_answer
+        return _post_process_answer(response.content.strip(), docs, is_sufficient)
 
     except Exception as e:
         logger.error("[FIQH_GENERATOR] generate_answer error: %s", e)
@@ -134,3 +122,26 @@ def generate_answer(
             + FATWA_DISCLAIMER
         )
         return fallback
+
+
+async def agenerate_answer(
+    query: str,
+    docs: list[dict],
+    sea_result: SEAResult,
+    is_sufficient: bool,
+) -> str:
+    """Native async variant of `generate_answer`."""
+    try:
+        model = chat_models.get_generator_model()
+        response = await model.ainvoke(_prompt.format_messages(
+            query=query,
+            evidence=_format_evidence(docs),
+        ))
+        return _post_process_answer(response.content.strip(), docs, is_sufficient)
+    except Exception as e:
+        logger.error("[FIQH_GENERATOR] agenerate_answer error: %s", e)
+        return (
+            "I was unable to generate an answer from the retrieved evidence. "
+            "Please consult Sistani's official resources at sistani.org or contact his office directly."
+            + FATWA_DISCLAIMER
+        )

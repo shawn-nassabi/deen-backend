@@ -71,8 +71,8 @@ async def chat_pipeline_stream_ep(
                 "lesson_name": request.lesson_name,
             },
         )
-        # Returns a StreamingResponse from the pipeline
-        return pipeline.hikmah_elaboration_pipeline_streaming(
+        # Returns a StreamingResponse from the now-async pipeline (DEE-44)
+        return await pipeline.hikmah_elaboration_pipeline_streaming(
             selected_text=request.selected_text,
             context_text=request.context_text,
             hikmah_tree_name=request.hikmah_tree_name,
