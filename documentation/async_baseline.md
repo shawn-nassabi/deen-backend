@@ -140,3 +140,36 @@ A speedup of 1.0 means full serialisation; the Phase 7 gate requires
 }
 ```
 
+## phase-3 native-async-modules (DEE-42) — 2026-04-29T19:43:10+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **1.0039**
+- p50_s / p95_s: 0.9959 / 1.0
+- throughput_rps: 9.9612
+- speedup_vs_serial: **7.4709**
+
+```json
+{
+  "label": "phase-3 native-async-modules (DEE-42)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 1.0039,
+  "p50_s": 0.9959,
+  "p95_s": 1.0,
+  "min_s": 0.8466,
+  "max_s": 1.0,
+  "mean_s": 0.9809,
+  "throughput_rps": 9.9612,
+  "speedup_vs_serial": 7.4709,
+  "timestamp": "2026-04-29T19:43:10+00:00"
+}
+```
+

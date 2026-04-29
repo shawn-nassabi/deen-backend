@@ -3,8 +3,6 @@ Query enhancement tools for the LangGraph agent.
 These tools improve query quality for better retrieval results.
 """
 
-import asyncio
-
 from langchain_core.tools import tool
 from modules.enhancement import enhancer
 from typing import Dict
@@ -46,9 +44,7 @@ async def enhance_query_tool(query: str, session_id: str) -> Dict[str, str]:
     - After classification determines the query is non-Islamic or fiqh
     """
     try:
-        # Phase 3 (DEE-42) introduces native `aenhance_query`; until then,
-        # run the sync enhancer off the event loop.
-        enhanced = await asyncio.to_thread(enhancer.enhance_query, query, session_id)
+        enhanced = await enhancer.aenhance_query(query, session_id)
 
         return {
             "enhanced_query": enhanced,
