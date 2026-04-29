@@ -27,10 +27,7 @@ def _decompose_node(state: FiqhState) -> dict:
     """Decompose original query into 1-4 keyword-rich sub-queries for retrieval."""
     from modules.fiqh.decomposer import decompose_query
 
-    state["status_events"].append({
-        "step": "fiqh_decompose",
-        "message": "Decomposing fiqh query...",
-    })
+    new_event = {"step": "fiqh_decompose", "message": "Decomposing fiqh query..."}
     try:
         sub_queries = decompose_query(state["query"])
         logger.info("Fiqh query decomposed", extra={
@@ -51,7 +48,7 @@ def _decompose_node(state: FiqhState) -> dict:
 
     return {
         "prior_queries": prior,
-        "status_events": list(state["status_events"]),
+        "status_events": list(state["status_events"]) + [new_event],
     }
 
 
@@ -60,10 +57,7 @@ def _retrieve_node(state: FiqhState) -> dict:
     from modules.fiqh.retriever import retrieve_fiqh_documents
 
     iteration = state["iteration"] + 1
-    state["status_events"].append({
-        "step": "fiqh_retrieve",
-        "message": f"Retrieving fiqh documents (iteration {iteration})...",
-    })
+    new_event = {"step": "fiqh_retrieve", "message": f"Retrieving fiqh documents (iteration {iteration})..."}
 
     # Use the last query in prior_queries for this retrieval
     current_query = state["prior_queries"][-1] if state["prior_queries"] else state["query"]
@@ -100,7 +94,7 @@ def _retrieve_node(state: FiqhState) -> dict:
     return {
         "iteration": iteration,
         "accumulated_docs": existing,
-        "status_events": list(state["status_events"]),
+        "status_events": list(state["status_events"]) + [new_event],
     }
 
 
@@ -108,10 +102,7 @@ def _filter_node(state: FiqhState) -> dict:
     """Filter accumulated docs to keep relevant evidence (inclusive bias)."""
     from modules.fiqh.filter import filter_evidence
 
-    state["status_events"].append({
-        "step": "fiqh_filter",
-        "message": "Filtering fiqh evidence...",
-    })
+    new_event = {"step": "fiqh_filter", "message": "Filtering fiqh evidence..."}
     try:
         filtered = filter_evidence(state["query"], state["accumulated_docs"])
         if len(filtered) == 0:
@@ -135,7 +126,7 @@ def _filter_node(state: FiqhState) -> dict:
 
     return {
         "accumulated_docs": filtered,
-        "status_events": list(state["status_events"]),
+        "status_events": list(state["status_events"]) + [new_event],
     }
 
 
@@ -143,10 +134,7 @@ def _assess_node(state: FiqhState) -> dict:
     """Run Structured Evidence Assessment (SEA) against accumulated docs."""
     from modules.fiqh.sea import assess_evidence, SEAResult
 
-    state["status_events"].append({
-        "step": "fiqh_assess",
-        "message": "Assessing evidence sufficiency...",
-    })
+    new_event = {"step": "fiqh_assess", "message": "Assessing evidence sufficiency..."}
     try:
         sea_result = assess_evidence(state["query"], state["accumulated_docs"])
         verdict = sea_result.verdict
@@ -173,7 +161,7 @@ def _assess_node(state: FiqhState) -> dict:
     return {
         "sea_result": sea_result,
         "verdict": verdict,
-        "status_events": list(state["status_events"]),
+        "status_events": list(state["status_events"]) + [new_event],
     }
 
 
@@ -181,10 +169,7 @@ def _refine_node(state: FiqhState) -> dict:
     """Generate targeted refinement queries from confirmed facts and gaps."""
     from modules.fiqh.refiner import refine_query
 
-    state["status_events"].append({
-        "step": "fiqh_refine",
-        "message": "Refining query for next retrieval iteration...",
-    })
+    new_event = {"step": "fiqh_refine", "message": "Refining query for next retrieval iteration..."}
     try:
         refinements = refine_query(
             original_query=state["query"],
@@ -208,7 +193,7 @@ def _refine_node(state: FiqhState) -> dict:
 
     return {
         "prior_queries": prior,
-        "status_events": list(state["status_events"]),
+        "status_events": list(state["status_events"]) + [new_event],
     }
 
 
