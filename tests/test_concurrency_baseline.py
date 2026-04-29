@@ -1,5 +1,5 @@
 """
-Phase 0 (DEE-39) concurrency baseline.
+Async migration concurrency gate (DEE-36).
 
 Runs N=10 concurrent agentic pipeline calls against the stubbed in-process
 pipeline (see tests/conftest_async_stubs.py). Captures wall-clock, p50, p95,
@@ -10,14 +10,14 @@ Two gates here:
 
 1. `test_baseline_records_snapshot` always runs and writes a JSON snapshot
    to documentation/async_baseline.md. Never asserts on latency — this is
-   the BEFORE picture for later phases to compare against.
+   the per-phase record for later phases to compare against.
 
 2. `test_concurrency_threshold` asserts wall-clock < per_request_latency *
    1.5 — i.e. N concurrent requests finish in roughly the time of a single
-   request. langgraph already yields between sync nodes so Phase 0 sits at
-   ~4.5x and fails this gate; Phase 2/3 (async nodes + async modules) is
-   where the ratio drops below 1.5x. Marked `xfail(strict=True)` so the
-   migration is forced to flip it to passing and drop the marker.
+   request. Phase 0 sat at ~4.5x because the streaming generator's sync
+   `chain.stream` blocked the event loop; Phase 1 (DEE-40) swapped to
+   `chain.astream` and dropped the ratio to ~1.3x. The gate is now a hard
+   requirement for every later phase to keep passing.
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ from scripts.loadtest_agentic import _emit_snapshot, _run_in_process, parse_args
 
 
 _BASELINE_PATH = Path(__file__).resolve().parent.parent / "documentation" / "async_baseline.md"
+
+_DEFAULT_LABEL = "phase-1 chain.astream (DEE-40)"
 
 
 def _build_args(n: int, label: str):
@@ -51,8 +53,8 @@ def _build_args(n: int, label: str):
 
 @pytest.mark.asyncio
 async def test_baseline_records_snapshot():
-    """Always runs — emits the Phase 0 snapshot to documentation/async_baseline.md."""
-    label = os.environ.get("ASYNC_BASELINE_LABEL", "phase-0 baseline (DEE-39)")
+    """Always runs — appends the current-phase snapshot to documentation/async_baseline.md."""
+    label = os.environ.get("ASYNC_BASELINE_LABEL", _DEFAULT_LABEL)
     args = _build_args(n=10, label=label)
     payload = await _run_in_process(args)
 
@@ -64,20 +66,10 @@ async def test_baseline_records_snapshot():
     _emit_snapshot(_BASELINE_PATH, payload)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Real concurrency gate: wall-clock should approach single-request latency. "
-        "Phase 0 is ~4.5x because the agent's sync nodes / chain.stream / sync "
-        "Pinecone serialise on the event loop. Phase 2 (DEE-41) async nodes and "
-        "Phase 3 (DEE-42) async modules are where the ratio drops below 1.5x; "
-        "remove this marker once it XPASSes."
-    ),
-)
 @pytest.mark.asyncio
 async def test_concurrency_threshold():
     """Wall-clock < per_request * 1.5 — N requests should finish in ~one-request-time."""
-    args = _build_args(n=10, label="phase-0 threshold-check")
+    args = _build_args(n=10, label=f"{_DEFAULT_LABEL} threshold-check")
     payload = await _run_in_process(args)
 
     expected_per_request = payload["stubs"]["expected_per_request_s"]

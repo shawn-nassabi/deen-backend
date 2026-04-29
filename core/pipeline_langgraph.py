@@ -5,6 +5,7 @@ This replaces the hardcoded pipeline with an intelligent agent
 that decides which tools to use and when.
 """
 
+import asyncio
 import json
 from typing import AsyncGenerator, Optional
 
@@ -267,7 +268,7 @@ async def chat_pipeline_streaming_agentic(
                     model = chat_models.get_generator_model()
                     chain = fiqh_prompt | model
                     response_tokens = []
-                    for chunk in chain.stream({
+                    async for chunk in chain.astream({
                         "query": user_query,
                         "evidence": _format_evidence(fiqh_docs),
                     }):
@@ -331,10 +332,14 @@ async def chat_pipeline_streaming_agentic(
                         chat_model = chat_models.get_generator_model()
                         prompt = prompt_templates.generator_prompt_template
                         chain = prompt | chat_model
-                        history_messages = make_history(runtime_session_id).messages
+                        # make_history hits sync redis-py; offload to a thread until Phase 4
+                        # (DEE-43) ships the redis.asyncio-backed AsyncRedisChatMessageHistory.
+                        history_messages = await asyncio.to_thread(
+                            lambda: make_history(runtime_session_id).messages
+                        )
 
                         response_tokens = []
-                        for chunk in chain.stream(
+                        async for chunk in chain.astream(
                             {
                                 "target_language": target_language,
                                 "query": user_query,
