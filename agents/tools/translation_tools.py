@@ -3,8 +3,6 @@ Translation tools for the LangGraph agent.
 These tools handle translation between English and other languages.
 """
 
-import asyncio
-
 from langchain_core.tools import tool
 from modules.translation import translator
 from typing import Dict
@@ -39,11 +37,7 @@ async def translate_to_english_tool(text: str, source_language: str) -> Dict[str
                 "source_language": "english"
             }
 
-        # Phase 3 (DEE-42) introduces native `atranslate_to_english`; until
-        # then, run the sync translator off the event loop.
-        translated = await asyncio.to_thread(
-            translator.translate_to_english, text, source_language
-        )
+        translated = await translator.atranslate_to_english(text, source_language)
 
         return {
             "translated_text": translated,

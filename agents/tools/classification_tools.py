@@ -3,8 +3,6 @@ Classification tools for the LangGraph agent.
 These tools help determine if a query is relevant and answerable.
 """
 
-import asyncio
-
 from langchain_core.tools import tool
 from modules.classification import classifier
 from typing import Dict
@@ -41,11 +39,7 @@ async def check_if_non_islamic_tool(query: str, session_id: str) -> Dict[str, an
     - "Who won the World Cup?"
     """
     try:
-        # Phase 3 (DEE-42) introduces a native `aclassify_non_islamic_query`;
-        # until then, run the sync classifier off the event loop.
-        is_non_islamic = await asyncio.to_thread(
-            classifier.classify_non_islamic_query, query, session_id
-        )
+        is_non_islamic = await classifier.aclassify_non_islamic_query(query, session_id)
 
         if is_non_islamic:
             explanation = "Query is not related to Islamic education domain"
@@ -94,9 +88,7 @@ async def check_if_fiqh_tool(query: str, session_id: str) -> Dict[str, any]:
     - "Who were the 12 Imams?"
     """
     try:
-        is_fiqh = await asyncio.to_thread(
-            classifier.classify_fiqh_query, query, session_id
-        )
+        is_fiqh = await classifier.aclassify_fiqh_query(query, session_id)
 
         if is_fiqh:
             explanation = "Query appears to be asking for a fiqh ruling or legal verdict"

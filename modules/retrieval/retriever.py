@@ -1,9 +1,11 @@
+import asyncio
+import traceback
+
 from core.config import DEEN_SPARSE_INDEX_NAME, DEEN_DENSE_INDEX_NAME, QURAN_DENSE_INDEX_NAME
 import core.vectorstore as vectorstore_module
-from modules.reranking import reranker
-from modules.embedding import embedder
 from core.utils import decompress_text
-import traceback
+from modules.embedding import embedder
+from modules.reranking import reranker
 
 
 def _require_index_name(index_name, env_var_name):
@@ -14,65 +16,74 @@ def _require_index_name(index_name, env_var_name):
     return index_name
 
 
-def retrieve_documents(query,no_of_docs=10):
+# --- Sync retrieval (kept for legacy callers) ------------------------------
+
+
+def retrieve_documents(query, no_of_docs=10):
     print("INSIDE retrive_documents")
     try:
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
-        dense_docs_and_score = dense_vectorstore.similarity_search_with_score(query,k=20)
+        dense_docs_and_score = dense_vectorstore.similarity_search_with_score(query, k=20)
 
         sparse_embedding = embedder.generate_sparse_embedding(query)
         spare_vectorstore = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
         sparse_docs = spare_vectorstore.query(
-                top_k=20,
-                include_metadata=True,
-                sparse_vector=sparse_embedding,
-                namespace="ns1"
+            top_k=20,
+            include_metadata=True,
+            sparse_vector=sparse_embedding,
+            namespace="ns1",
         )
 
-        result = reranker.rerank_documents(dense_docs_and_score, sparse_docs,no_of_docs)
+        result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
     except Exception as e:
         print(f"Error retrieving documents: {e}")
         traceback.print_exc()
         return []
 
-def retrieve_shia_documents(query,no_of_docs=10):
+
+def retrieve_shia_documents(query, no_of_docs=10):
     print("INSIDE shia retrive_documents")
     try:
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
-        dense_docs_and_score = dense_vectorstore.similarity_search_with_score(query,filter={'sect':'shia'},k=no_of_docs)
+        dense_docs_and_score = dense_vectorstore.similarity_search_with_score(
+            query, filter={'sect': 'shia'}, k=no_of_docs
+        )
 
         sparse_embedding = embedder.generate_sparse_embedding(query)
         spare_vectorstore = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
         sparse_docs = spare_vectorstore.query(
-                top_k=no_of_docs,
-                include_metadata=True,
-                sparse_vector=sparse_embedding,
-                namespace="ns1",
-                filter={'sect':'shia'}
+            top_k=no_of_docs,
+            include_metadata=True,
+            sparse_vector=sparse_embedding,
+            namespace="ns1",
+            filter={'sect': 'shia'},
         )
 
-        result = reranker.rerank_documents(dense_docs_and_score, sparse_docs,no_of_docs)
+        result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
     except Exception as e:
         print(f"Error retrieving documents: {e}")
         traceback.print_exc()
         return []
 
-def retrieve_sunni_documents(query,no_of_docs=10):
+
+def retrieve_sunni_documents(query, no_of_docs=10):
     print("INSIDE sunni retrive_documents")
     try:
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
-        dense_docs_and_score = dense_vectorstore.similarity_search_with_score(query,filter={'sect':'sunni'},k=no_of_docs)
+        dense_docs_and_score = dense_vectorstore.similarity_search_with_score(
+            query, filter={'sect': 'sunni'}, k=no_of_docs
+        )
 
         sparse_embedding = embedder.generate_sparse_embedding(query)
         spare_vectorstore = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
         sparse_docs = spare_vectorstore.query(
-                top_k=no_of_docs,
-                include_metadata=True,
-                sparse_vector=sparse_embedding,
-                namespace="ns1",
-                filter={'sect':'sunni'}
+            top_k=no_of_docs,
+            include_metadata=True,
+            sparse_vector=sparse_embedding,
+            namespace="ns1",
+            filter={'sect': 'sunni'},
         )
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
@@ -98,7 +109,7 @@ def retrieve_quran_documents(query, no_of_docs=5):
             vector=query_vector,
             top_k=no_of_docs,
             include_metadata=True,
-            namespace="ns1"
+            namespace="ns1",
         )
 
         docs = []
@@ -110,7 +121,100 @@ def retrieve_quran_documents(query, no_of_docs=5):
                 "chunk_id": match.id,
                 "metadata": md,
                 "page_content_en": text_chunk,
-                "quran_translation": quran_translation
+                "quran_translation": quran_translation,
+            })
+        return docs
+    except ValueError as e:
+        print(f"Error retrieving Quran documents: {e}")
+        raise
+    except Exception as e:
+        print(f"Error retrieving Quran documents: {e}")
+        traceback.print_exc()
+        raise
+
+
+# --- Async retrieval (DEE-42) ----------------------------------------------
+#
+# Dense vectorstore search uses langchain-pinecone's native
+# asimilarity_search_with_score (HTTP I/O bound). Sparse Pinecone queries use
+# the v1 sync SDK; offloaded to a thread until a follow-up adopts
+# PineconeAsyncio. Reranking and sparse TF-IDF embedding are CPU-bound — they
+# stay in run_in_executor so they don't pin the event loop. Dense + sparse
+# branches run concurrently via asyncio.gather.
+
+
+async def _dense_search(index_name, query, *, k, sect_filter=None):
+    vectorstore = vectorstore_module._get_vectorstore(index_name)
+    kwargs = {"k": k}
+    if sect_filter is not None:
+        kwargs["filter"] = sect_filter
+    return await vectorstore.asimilarity_search_with_score(query, **kwargs)
+
+
+async def _sparse_search(query, *, k, sect_filter=None, namespace="ns1"):
+    sparse_embedding = await asyncio.to_thread(embedder.generate_sparse_embedding, query)
+    sparse_index = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
+    return await asyncio.to_thread(
+        sparse_index.query,
+        top_k=k,
+        include_metadata=True,
+        sparse_vector=sparse_embedding,
+        namespace=namespace,
+        **({"filter": sect_filter} if sect_filter is not None else {}),
+    )
+
+
+async def _aretrieve_with_filter(query, no_of_docs, sect):
+    try:
+        dense_docs_and_score, sparse_docs = await asyncio.gather(
+            _dense_search(DEEN_DENSE_INDEX_NAME, query, k=no_of_docs, sect_filter={"sect": sect}),
+            _sparse_search(query, k=no_of_docs, sect_filter={"sect": sect}),
+        )
+        return await asyncio.to_thread(
+            reranker.rerank_documents, dense_docs_and_score, sparse_docs, no_of_docs
+        )
+    except Exception as e:
+        print(f"Error retrieving {sect} documents: {e}")
+        traceback.print_exc()
+        return []
+
+
+async def aretrieve_shia_documents(query, no_of_docs=10):
+    return await _aretrieve_with_filter(query, no_of_docs, "shia")
+
+
+async def aretrieve_sunni_documents(query, no_of_docs=10):
+    return await _aretrieve_with_filter(query, no_of_docs, "sunni")
+
+
+async def aretrieve_quran_documents(query, no_of_docs=5):
+    """Async variant of `retrieve_quran_documents`. The dense embedder hits
+    sentence-transformers (CPU on torch) — `aembed_query` runs that in
+    LangChain's executor so it doesn't block the event loop. The Pinecone
+    query stays in `to_thread` until PineconeAsyncio adoption."""
+    try:
+        index_name = _require_index_name(QURAN_DENSE_INDEX_NAME, "QURAN_DENSE_INDEX_NAME")
+        query_vector = await embedder.getDenseEmbedder().aembed_query(query)
+
+        index = vectorstore_module._get_sparse_vectorstore(index_name)
+        results = await asyncio.to_thread(
+            index.query,
+            vector=query_vector,
+            top_k=no_of_docs,
+            include_metadata=True,
+            namespace="ns1",
+        )
+
+        docs = []
+        for match in results.matches:
+            md = match.metadata or {}
+            text_chunk = decompress_text(md.get("text_chunk", ""))
+            quran_translation = decompress_text(md.get("english_quran_translation", ""))
+            docs.append({
+                "chunk_id": match.id,
+                "metadata": md,
+                "page_content_en": text_chunk,
+                "quran_translation": quran_translation,
             })
         return docs
     except ValueError as e:

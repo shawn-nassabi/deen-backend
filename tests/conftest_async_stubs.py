@@ -243,6 +243,9 @@ def install_pipeline_stubs(cfg: Optional[StubConfig] = None):
     chat_models.get_generator_model = _generator_factory
 
     # --- Retrieval stub -----------------------------------------------------
+    # Both sync and async variants must be stubbed: tools call the async
+    # variants (DEE-42); legacy /references and /hikmah pipeline calls plus
+    # any cached imports still resolve to the sync ones.
     def _stub_retrieve_shia(query, num_documents=5):
         time.sleep(cfg.retrieval_sleep_s)
         return list(cfg.canned_docs[:num_documents] or cfg.canned_docs)
@@ -255,14 +258,33 @@ def install_pipeline_stubs(cfg: Optional[StubConfig] = None):
         time.sleep(cfg.retrieval_sleep_s)
         return []
 
+    async def _astub_retrieve_shia(query, num_documents=5):
+        await asyncio.sleep(cfg.retrieval_sleep_s)
+        return list(cfg.canned_docs[:num_documents] or cfg.canned_docs)
+
+    async def _astub_retrieve_sunni(query, num_documents=2):
+        await asyncio.sleep(cfg.retrieval_sleep_s)
+        return []
+
+    async def _astub_retrieve_quran(query, num_documents=3):
+        await asyncio.sleep(cfg.retrieval_sleep_s)
+        return []
+
     originals = {
         "shia": retriever_mod.retrieve_shia_documents,
         "sunni": retriever_mod.retrieve_sunni_documents,
         "quran": retriever_mod.retrieve_quran_documents,
+        "ashia": getattr(retriever_mod, "aretrieve_shia_documents", None),
+        "asunni": getattr(retriever_mod, "aretrieve_sunni_documents", None),
+        "aquran": getattr(retriever_mod, "aretrieve_quran_documents", None),
     }
     retriever_mod.retrieve_shia_documents = _stub_retrieve_shia
     retriever_mod.retrieve_sunni_documents = _stub_retrieve_sunni
     retriever_mod.retrieve_quran_documents = _stub_retrieve_quran
+    if originals["ashia"] is not None:
+        retriever_mod.aretrieve_shia_documents = _astub_retrieve_shia
+        retriever_mod.aretrieve_sunni_documents = _astub_retrieve_sunni
+        retriever_mod.aretrieve_quran_documents = _astub_retrieve_quran
 
     # --- Fiqh classifier stub (skip the fiqh sub-graph entirely) ------------
     original_classify_fiqh = fiqh_classifier_mod.classify_fiqh_query
@@ -276,6 +298,10 @@ def install_pipeline_stubs(cfg: Optional[StubConfig] = None):
         retriever_mod.retrieve_shia_documents = originals["shia"]
         retriever_mod.retrieve_sunni_documents = originals["sunni"]
         retriever_mod.retrieve_quran_documents = originals["quran"]
+        if originals["ashia"] is not None:
+            retriever_mod.aretrieve_shia_documents = originals["ashia"]
+            retriever_mod.aretrieve_sunni_documents = originals["asunni"]
+            retriever_mod.aretrieve_quran_documents = originals["aquran"]
         fiqh_classifier_mod.classify_fiqh_query = original_classify_fiqh
 
 
