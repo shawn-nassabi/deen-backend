@@ -303,8 +303,8 @@ async def chat_pipeline_agentic_non_stream_ep(
                     },
                 )
 
-        # Get response from agentic pipeline
-        result = pipeline_langgraph.chat_pipeline_agentic(
+        # Get response from agentic pipeline (async since DEE-41)
+        result = await pipeline_langgraph.chat_pipeline_agentic(
             user_query=user_query,
             session_id=session_id,
             target_language=target_language,
