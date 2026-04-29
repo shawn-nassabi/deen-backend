@@ -77,6 +77,7 @@ None.
 |---|-------------|------|--------|--------|-----------|
 | 260420-t2v | Improve SSE status granularity in /stream/agentic endpoint | 2026-04-21 | 54c8418 | Verified | [260420-t2v-improve-sse-status-granularity-in-stream](./quick/260420-t2v-improve-sse-status-granularity-in-stream/) |
 | 260421-uma | Set up Sentry SDK for error tracking and structured logging | 2026-04-22 | fe61762 | Complete | [260421-uma-set-up-sentry-sdk-for-error-tracking-and](./quick/260421-uma-set-up-sentry-sdk-for-error-tracking-and/) |
+| 260422-qau | Build feedback API to capture chatbot responses | 2026-04-22 | 760cb05 | Verified | [260422-qau-build-feedback-api-to-capture-chatbot-re](./quick/260422-qau-build-feedback-api-to-capture-chatbot-re/) |
 
 ## Session Continuity
 

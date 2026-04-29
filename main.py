@@ -8,6 +8,7 @@ from api import hikmah
 from api import account
 from api import onboarding
 from api import primers
+from api import feedback
 from models.JWTBearer import JWTBearer
 from core.auth import jwks
 from core.config import validate_supabase_config
@@ -81,6 +82,7 @@ app.include_router(user_progress_router.router)     # /user-progress
 app.include_router(hikmah_trees_router.router)      # /hikmah-trees
 app.include_router(memory_admin.router)             # /admin/memory
 app.include_router(primers.primers_router)          # /primers
+app.include_router(feedback.router)                 # /feedback
 
 
 import logging

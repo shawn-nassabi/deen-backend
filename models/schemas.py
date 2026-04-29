@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional, Dict, Any, List
+from typing import Literal, Optional, Dict, Any, List
 from datetime import datetime
 
 
@@ -155,3 +155,17 @@ class QuizQuestionAdminResponse(QuizQuestionResponse):
 class LessonPageQuizQuestionsAdminResponse(BaseModel):
     lesson_content_id: int
     questions: List[QuizQuestionAdminResponse]
+
+
+# schemas for Feedback API
+
+class FeedbackRequest(BaseModel):
+    rating: Literal["like", "dislike"]
+    comment: Optional[str] = None
+    user_query: str
+    chatbot_response: str
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+    message: str
