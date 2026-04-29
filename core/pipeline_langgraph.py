@@ -211,7 +211,7 @@ async def chat_pipeline_streaming_agentic(
                 yield sse_event("response_end", {})
                 from services import chat_persistence_service
 
-                chat_persistence_service.append_turn_to_runtime_history(
+                await chat_persistence_service.aappend_turn_to_runtime_history(
                     runtime_session_id=runtime_session_id,
                     user_query=user_query,
                     assistant_text=assistant_text,
@@ -299,7 +299,7 @@ async def chat_pipeline_streaming_agentic(
                 # Persist fiqh answer to conversation history
                 if assistant_text and not history_written:
                     from services import chat_persistence_service
-                    chat_persistence_service.append_turn_to_runtime_history(
+                    await chat_persistence_service.aappend_turn_to_runtime_history(
                         runtime_session_id=runtime_session_id,
                         user_query=user_query,
                         assistant_text=assistant_text,
@@ -324,7 +324,7 @@ async def chat_pipeline_streaming_agentic(
                         yield sse_event("response_end", {})
                     else:
                         from core import chat_models, prompt_templates
-                        from core.memory import make_history
+                        from core.memory import amake_history
 
                         yield sse_event("status", {"step": "generate_response", "message": "Preparing answer..."})
 
@@ -332,11 +332,7 @@ async def chat_pipeline_streaming_agentic(
                         chat_model = chat_models.get_generator_model()
                         prompt = prompt_templates.generator_prompt_template
                         chain = prompt | chat_model
-                        # make_history hits sync redis-py; offload to a thread until Phase 4
-                        # (DEE-43) ships the redis.asyncio-backed AsyncRedisChatMessageHistory.
-                        history_messages = await asyncio.to_thread(
-                            lambda: make_history(runtime_session_id).messages
-                        )
+                        history_messages = await amake_history(runtime_session_id).aget_messages()
 
                         response_tokens = []
                         async for chunk in chain.astream(
@@ -368,7 +364,7 @@ async def chat_pipeline_streaming_agentic(
                 if assistant_text and not history_written:
                     from services import chat_persistence_service
 
-                    chat_persistence_service.append_turn_to_runtime_history(
+                    await chat_persistence_service.aappend_turn_to_runtime_history(
                         runtime_session_id=runtime_session_id,
                         user_query=user_query,
                         assistant_text=assistant_text,
@@ -394,7 +390,7 @@ async def chat_pipeline_streaming_agentic(
                 try:
                     from services import chat_persistence_service
 
-                    chat_persistence_service.append_turn_to_runtime_history(
+                    await chat_persistence_service.aappend_turn_to_runtime_history(
                         runtime_session_id=final_state.get("runtime_session_id", session_id) if final_state else session_id,
                         user_query=user_query,
                         assistant_text=assistant_text,

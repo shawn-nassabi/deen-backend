@@ -173,3 +173,69 @@ A speedup of 1.0 means full serialisation; the Phase 7 gate requires
 }
 ```
 
+## phase-4 async-redis (DEE-43) — 2026-04-29T20:06:52+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.9675**
+- p50_s / p95_s: 0.961 / 0.9663
+- throughput_rps: 10.3363
+- speedup_vs_serial: **7.7522**
+
+```json
+{
+  "label": "phase-4 async-redis (DEE-43)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.9675,
+  "p50_s": 0.961,
+  "p95_s": 0.9663,
+  "min_s": 0.843,
+  "max_s": 0.9663,
+  "mean_s": 0.9493,
+  "throughput_rps": 10.3363,
+  "speedup_vs_serial": 7.7522,
+  "timestamp": "2026-04-29T20:06:52+00:00"
+}
+```
+
+## phase-4 async-redis (DEE-43) — 2026-04-29T20:12:27+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.6116**
+- p50_s / p95_s: 0.5912 / 0.5933
+- throughput_rps: 16.35
+- speedup_vs_serial: **12.2625**
+
+```json
+{
+  "label": "phase-4 async-redis (DEE-43)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.6116,
+  "p50_s": 0.5912,
+  "p95_s": 0.5933,
+  "min_s": 0.5866,
+  "max_s": 0.5933,
+  "mean_s": 0.5907,
+  "throughput_rps": 16.35,
+  "speedup_vs_serial": 12.2625,
+  "timestamp": "2026-04-29T20:12:27+00:00"
+}
+```
+

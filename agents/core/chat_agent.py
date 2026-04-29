@@ -609,11 +609,27 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     @staticmethod
     def _load_runtime_messages(session_id: str):
+        """Sync history load used by `astream()` (kept sync because callers
+        like `core.pipeline_langgraph` already invoke this from a non-async
+        context inside the streaming wrapper)."""
         try:
             from core.memory import make_history
 
             history = make_history(session_id)
             return history.messages
+        except Exception as exc:
+            logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            return []
+
+    @staticmethod
+    async def _aload_runtime_messages(session_id: str):
+        """Async-native runtime history load (DEE-43). Uses
+        `core.memory.amake_history` so Redis I/O doesn't block the event loop."""
+        try:
+            from core.memory import amake_history
+
+            history = amake_history(session_id)
+            return await history.aget_messages()
         except Exception as exc:
             logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return []
@@ -629,12 +645,13 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         only correct way to drive the graph from inside an event loop."""
         from agents.state.chat_state import create_initial_state
 
+        initial_messages = await self._aload_runtime_messages(session_id)
         initial_state = create_initial_state(
             user_query=user_query,
             session_id=session_id,
             target_language=target_language,
             config=config or self.config.to_dict(),
-            initial_messages=self._load_runtime_messages(session_id),
+            initial_messages=initial_messages,
         )
 
         return await self.compiled_graph.ainvoke(
@@ -671,12 +688,13 @@ Generate a comprehensive, accurate response that directly addresses the user's q
     ):
         from agents.state.chat_state import create_initial_state
 
+        initial_messages = await self._aload_runtime_messages(session_id)
         initial_state = create_initial_state(
             user_query=user_query,
             session_id=session_id,
             target_language=target_language,
             config=config or self.config.to_dict(),
-            initial_messages=self._load_runtime_messages(session_id),
+            initial_messages=initial_messages,
             streaming_mode=streaming_mode,
         )
 

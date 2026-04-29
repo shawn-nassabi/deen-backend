@@ -1,9 +1,8 @@
-import asyncio
 from typing import Optional
 
 from core import chat_models
 from core import prompt_templates
-from core.memory import make_history
+from core.memory import amake_history, make_history
 
 
 def enhance_query(query: str, session_id: Optional[str] = None) -> str:
@@ -46,9 +45,7 @@ async def aenhance_query(query: str, session_id: Optional[str] = None) -> str:
     history_messages = []
     if session_id:
         try:
-            history_messages = await asyncio.to_thread(
-                lambda: make_history(session_id).messages
-            )
+            history_messages = await amake_history(session_id).aget_messages()
         except Exception as e:
             print(f"[aenhance_query] failed loading history: {e}")
             history_messages = []
