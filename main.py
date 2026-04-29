@@ -12,9 +12,12 @@ from api import feedback
 from models.JWTBearer import JWTBearer
 from core.auth import jwks
 from core.config import validate_supabase_config
+import core.sentry  # side-effect: initializes Sentry SDK when SENTRY_ENABLED=true AND SENTRY_DSN set
+from core.sentry import SENTRY_ENABLED
 import os
 
 from db.session import engine, Base          # for optional table bootstrap
+from sqlalchemy import text
 from db.routers import (
     lessons as lessons_router,
     lesson_content as lesson_content_router,
@@ -57,6 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from core.middleware import CorrelationIdMiddleware
+app.add_middleware(CorrelationIdMiddleware)  # registered after CORS → runs first (insert(0) semantics)
+
 # API routers
 # app.include_router(reference.ref_router,dependencies=[Depends(auth)])
 # app.include_router(chat.chat_router,dependencies=[Depends(auth)])
@@ -79,21 +85,32 @@ app.include_router(primers.primers_router)          # /primers
 app.include_router(feedback.router)                 # /feedback
 
 
+import logging
+import sentry_sdk
 from fastapi.responses import JSONResponse
 from fastapi.requests import Request
-import traceback
+from core.config import ENV
+
+logger = logging.getLogger(__name__)
 
 @app.middleware("http")
 async def catch_exceptions_mw(request: Request, call_next):
     try:
         return await call_next(request)
     except Exception as e:
-        tb = traceback.format_exc()
-        print("\n===== SERVER EXCEPTION =====\n", tb, "\n============================\n")
-        return JSONResponse(status_code=500, content={"detail": "internal_error", "error": str(e)})
-
-from sqlalchemy import text
-from db.session import engine
+        logger.error(
+            "Unhandled exception",
+            exc_info=True,
+            extra={"path": str(request.url.path)},
+        )
+        if SENTRY_ENABLED:
+            sentry_sdk.capture_exception(e)
+        if ENV == "development":
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "internal_error", "error": str(e)},
+            )
+        return JSONResponse(status_code=500, content={"detail": "internal_error"})
 
 @app.get("/_debug/db")
 def db_ping():
@@ -116,3 +133,9 @@ from fastapi.routing import APIRoute
 @app.get("/_routes")
 def _routes():
     return [{"path": r.path, "methods": list(r.methods)} for r in app.routes if isinstance(r, APIRoute)]
+
+if os.getenv("ENV", "development") == "development":
+    @app.get("/sentry-debug", tags=["Debug"])
+    def trigger_sentry_error():
+        """Dev-only endpoint to verify Sentry error capture is working."""
+        division_by_zero = 1 / 0
