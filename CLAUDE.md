@@ -19,8 +19,12 @@ uvicorn main:app --port 8080 --reload --host 0.0.0.0
 # Tests
 pytest tests -q                             # primary test suite
 pytest tests/db -q                          # DB compatibility (requires DATABASE_URL)
+pytest tests/test_fiqh_*.py -q              # FAIR-RAG fiqh subsystem tests
 python agent_tests/test_memory_agent.py     # memory agent integration
 pytest tests/test_agentic_streaming_sse.py -v -s
+
+# Fiqh corpus ingestion (one-shot, populates Pinecone fiqh indices)
+python scripts/ingest_fiqh.py
 
 # Docker
 docker compose build --no-cache && docker compose up -d
@@ -54,6 +58,8 @@ The AI pipeline flows: HTTP request → `api/` → `core/pipeline_langgraph.py` 
 | `GET /references` | Semantic reference lookup with sect filtering |
 | `POST /hikmah/elaborate` | Hikmah tree elaboration |
 | `GET /primers` | Personalized primer retrieval |
+| `POST /onboarding`, `GET /onboarding/me` | User onboarding profile |
+| `POST /feedback` | User feedback capture |
 | `GET /admin/memory` | Memory admin dashboard |
 
 ### Key environment variables
@@ -72,7 +78,22 @@ Current LLM defaults: `LARGE_LLM=gpt-4.1-2025-04-14`, `SMALL_LLM=gpt-4o-mini-202
 
 ### Agentic pipeline (LangGraph)
 
-`core/pipeline_langgraph.py` implements the active pipeline as a LangGraph graph. The agent uses 8 tools across 4 stages. Key early-exit conditions: `non_islamic` classification and `fiqh` routing. When adding new agentic behavior, write tests around tool-selection outcomes and these early-exit paths.
+`core/pipeline_langgraph.py` implements the active pipeline as a LangGraph graph. The agent uses 9 tools (across `agents/tools/`: 4 retrieval, 2 classification, 2 translation, 1 enhancement) bound to the LLM via `.bind_tools()`. Key early-exit conditions: `non_islamic` classification and `fiqh` routing — when fiqh is detected, control hands off to the FAIR-RAG subsystem (see below). When adding new agentic behavior, write tests around tool-selection outcomes and these early-exit paths.
+
+### Fiqh subsystem (FAIR-RAG)
+
+The fiqh path is a separate, dedicated graph — not just a tool on the main agent. When `check_if_fiqh_tool` detects a Twelver Shia fiqh question, the main agent routes out and `agents/fiqh/fiqh_graph.py` runs a 5-node iterative pipeline (decompose → retrieve → filter → assess → refine, looping up to 3 times). The pipeline stages live in `modules/fiqh/`:
+
+- `decomposer.py` — splits multi-part questions into atomic sub-queries
+- `retriever.py` — Pinecone search against the dedicated fiqh indices
+- `filter.py` — relevance filtering of retrieved passages
+- `sea.py` — sufficiency / evidence assessment (decides whether to refine or exit)
+- `refiner.py` — query refinement for the next iteration
+- `generator.py` — final grounded answer synthesis (refuses rather than speculates)
+- `fair_rag.py` — `run_fair_rag(query)` is the synchronous entry point used outside LangGraph
+- `classifier.py` — fiqh-specific topical classification
+
+Corpus ingestion lives in `scripts/ingest_fiqh.py` and populates separate Pinecone indices (do not reuse the main hadith/Quran indices). Fiqh tests are `tests/test_fiqh_*.py` covering each stage individually plus integration (`test_fiqh_integration.py`) and graph-level logging (`test_fiqh_graph_logging.py`). Honour the religious-sensitivity constraints from the Project section: never issue fatwas, always include disclaimers, refuse rather than speculate.
 
 ### Memory system
 
@@ -80,7 +101,7 @@ Redis stores per-user conversation history (`REDIS_KEY_PREFIX` namespaced). `ser
 
 ### Database
 
-13 SQLAlchemy tables in `db/models/`. 6 Alembic migrations in `alembic/versions/`. The project uses both sync (`db/session.py`) and async (`ASYNC_DATABASE_URL`) database sessions.
+SQLAlchemy models in `db/models/`. 11 Alembic migrations in `alembic/versions/` (always run `alembic upgrade head` after pulling). The project uses both sync (`db/session.py`) and async (`ASYNC_DATABASE_URL`) database sessions.
 
 ## Coding conventions
 
