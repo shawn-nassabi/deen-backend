@@ -143,6 +143,53 @@
 
 ---
 
+## Milestone: v1.3 — Sentry Deep Integration
+
+**Shipped:** 2026-04-28
+**Phases:** 4 | **Plans:** 8 | **Timeline:** 2026-04-26 → 2026-04-28 (3 days)
+
+### What Was Built
+
+- **Phase 13 (Infrastructure):** `core/context.py` (correlation_id ContextVar), `core/middleware.py` (CorrelationIdMiddleware, server-side UUID), `core/sentry.py` (dual-gate init, `bind_sentry_scope`, `_scrub_pii` before_send hook); main.py wired with side-effect import
+- **Phase 14 (Routes):** All 4 main API routes instrumented with `extra={}` structured logging, `bind_sentry_scope()`, zero `print()` calls; REF-02 data-leak bug closed (raw exception was being returned in HTTP 500 detail)
+- **Phase 15 (Pipeline + Tools):** `core/pipeline_langgraph.py`, `agents/tools/retrieval_tools.py`, `agents/core/chat_agent.py` — ~30 `print()` calls replaced; node traversal at DEBUG; zero `capture_exception()` calls
+- **Phase 16 (Fiqh Sub-graph):** 10 `%s`-format log calls converted to `extra={}` in `agents/fiqh/fiqh_graph.py`; 3 new WARNING boundaries at FAIR-RAG silent failure paths; 7 unit tests via TDD (RED → GREEN commits)
+
+### What Worked
+
+- **Single-file-per-plan scoping:** Each plan targeted 1–2 files, making verification fast and unambiguous — grep checks were pass/fail without interpretation
+- **Decision pre-locking in CONTEXT.md:** Phase 16 pre-locked all decisions (D-01..D-11) before execution — no discretionary choices during execution, zero deviations from plan
+- **TDD for instrumentation tests:** Writing failing tests first (Phase 16 RED commit) made the WARNING boundary conditions explicit before implementation, and the GREEN commit verified all 3 boundaries exactly
+- **Side-effect import pattern for Sentry init:** `import core.sentry` in main.py instead of inline `sentry_sdk.init()` — clean separation of concerns, single-responsibility module, guaranteed one-fire via `sys.modules` caching
+- **logger.error(exc_info=True) over capture_exception():** Eliminated a whole class of duplicate Sentry event bugs before they could occur
+
+### What Was Inefficient
+
+- **REQUIREMENTS.md not updated during execution:** 17 of 22 requirements remained unchecked at milestone close despite all being delivered — same pattern seen in v1.1 and v1.2. Checkbox maintenance needs to happen at plan completion, not retroactively at archive time.
+- **ROADMAP.md Phase 16 progress inconsistency:** Phase 16 plan checkbox and progress table went stale during execution — discovered only at archive time. Same root cause as the requirements gap: progress artifacts not updated at plan completion.
+- **No formal milestone audit file:** `/gsd-audit-milestone` was not run before archival — proceeded on evidence from SUMMARY.md files instead. Acceptable for an observability-only milestone with no behavior changes, but the audit adds value for functional milestones.
+
+### Patterns Established
+
+- **WARNING-on-boundary pattern:** Log `logger.warning()` BEFORE continuing on a silent failure path, not instead of continuing. The fail-open path still executes; the warning makes the failure visible in Sentry. Applied in FIQH-02, FIQH-03, FIQH-04.
+- **Patch deferred imports at source module:** For unit tests patching functions imported in fiqh_graph.py, patch at the source module (`modules.fiqh.xxx`) not at the consumer module level — Pitfall 6 from Phase 16 research.
+- **`query_length` instead of `query` in log extra={}:** Log the length of user content (an int) rather than the content itself — prevents Islamic query text reaching Sentry Logs at all, satisfying the Article 9 compliance requirement without needing a `before_send_log` hook.
+
+### Key Lessons
+
+1. **REQUIREMENTS.md checkbox maintenance must happen at plan completion** — three consecutive milestones (v1.1, v1.2, v1.3) had unchecked-but-delivered requirements at archive time. The pattern is now documented; the fix is to check off requirements in REQUIREMENTS.md as part of the plan execution self-check.
+2. **Pre-lock all instrumentation decisions in CONTEXT.md before Phase execution** — Phase 16 with pre-locked D-01..D-11 had zero deviations and took 7 minutes. Phase 15 without the same pre-locking had the same result but required more judgment calls during execution.
+3. **Duplicate Sentry events are a silent bug** — `capture_exception()` AND `logger.error(exc_info=True)` both captured the same exception in the original `catch_exceptions_mw`; LoggingIntegration is invisible and easy to forget. Document the rule in CONTEXT.md for any future instrumentation phase.
+4. **The `before_send` hook is not a substitute for not logging PII** — `before_send` removes request body, but Sentry Logs (structured log events) bypass it. The correct approach is to never include `user_query` or query content in any `extra={}` dict — the hook is a second layer, not the first.
+
+### Cost Observations
+
+- Model mix: Sonnet 4.6 (all phases)
+- Sessions: ~3 days, 14 feature commits + supporting test/docs commits
+- Notable: Observability-only milestone with no behavior changes — fastest milestone at 3 days; phasing by file/layer (infra → routes → pipeline → fiqh) worked cleanly
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -152,6 +199,7 @@
 | v1.0 | 4 | 12 | First milestone; established FAIR-RAG module isolation + sub-graph patterns |
 | v1.1 | 3 | 6 | Infrastructure migration; established genesis-migration + direct-connection patterns |
 | v1.2 | 5 | 9 | Provider migration; established provider-swap ordering + `with_structured_output` + AIMessage filter patterns |
+| v1.3 | 4 | 8 | Observability pass; established WARNING-on-boundary + pre-locked CONTEXT.md + TDD for instrumentation patterns |
 
 ### Cumulative Quality
 
@@ -160,6 +208,7 @@
 | v1.0 | ~55 mock-based unit tests | 8 fiqh modules | modules/fiqh/ (fully isolated from agents layer) |
 | v1.1 | 0 new tests (infra migration) | 0 new modules | core/auth.py, api/account.py, .env.example |
 | v1.2 | ~15 updated tests (HuggingFace mocks) | 0 new modules | langchain-anthropic (added), openai/langchain-openai/voyageai (removed) |
+| v1.3 | 7 new unit tests (WARNING boundaries) | 3 new core modules | core/context.py, core/middleware.py, core/sentry.py; tests/test_fiqh_graph_logging.py |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -168,3 +217,6 @@
 3. Always validate Alembic chain on a fresh database before any migration milestone — the genesis-migration gap in v1.1 was only discovered during Phase 5 execution
 4. Decide on all external providers before Phase 1 of a migration — mid-milestone pivots are correct but create superseded requirements and stale documentation
 5. Run `/gsd:audit-milestone` before the final cleanup phase — surfaces all accumulated tech debt so the cleanup phase has a complete, authoritative list
+6. **REQUIREMENTS.md checkbox maintenance must happen at plan completion** — three consecutive milestones had unchecked-but-delivered requirements at archive time; update checkboxes in REQUIREMENTS.md as part of plan self-check
+7. **Pre-lock instrumentation decisions in CONTEXT.md before execution** — Phase 16 with pre-locked D-01..D-11 took 7 minutes and had zero deviations; the pattern scales to any phase with many small judgment calls
+8. **`logger.error(exc_info=True)` is the only correct Sentry capture path** — `capture_exception()` creates duplicate events when LoggingIntegration is active; document this constraint in every future instrumentation CONTEXT.md

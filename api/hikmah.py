@@ -1,12 +1,13 @@
 import logging
-import traceback
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from core import pipeline
 from core.auth import auth
+from core.context import correlation_id as correlation_id_ctx
 from core.logging_config import setup_logging
+from core.sentry import bind_sentry_scope
 from models.JWTBearer import JWTAuthorizationCredentials
 from db.session import get_db
 from models.schemas import (
@@ -52,10 +53,13 @@ async def chat_pipeline_stream_ep(
       }
     """
 
+    corr_id = correlation_id_ctx.get()
+    bind_sentry_scope(corr_id, "/hikmah/elaborate/stream", user_id=request.user_id)
     try:
         logger.info(
             "Hikmah elaboration request received",
             extra={
+                "correlation_id": corr_id,
                 "user_id": request.user_id,
                 "selected_text_len": len(request.selected_text or ""),
                 "selected_text_preview": (request.selected_text or "")[:120],
@@ -77,9 +81,11 @@ async def chat_pipeline_stream_ep(
             user_id=request.user_id  # Pass user_id to pipeline for memory integration
         )
     except Exception as e:
-        # Log internally; keep response generic
-        print("UNHANDLED ERROR in /hikmah/elborate/stream:", e)
-        traceback.print_exc()
+        logger.error(
+            "Unhandled error in /hikmah/elaborate/stream",
+            exc_info=True,
+            extra={"correlation_id": corr_id, "user_id": request.user_id},
+        )
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
@@ -93,6 +99,7 @@ async def get_page_quiz_questions(
     db: Session = Depends(get_db),
 ):
     """Get all active multiple-choice quiz questions associated with a lesson page."""
+    corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
         return service.get_questions_for_page(lesson_content_id)
@@ -101,7 +108,7 @@ async def get_page_quiz_questions(
     except Exception as e:
         logger.error(
             "Error fetching quiz questions",
-            extra={"lesson_content_id": lesson_content_id, "error": str(e)},
+            extra={"correlation_id": corr_id, "lesson_content_id": lesson_content_id, "error": str(e)},
         )
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -145,6 +152,7 @@ async def create_page_quiz_question(
     db: Session = Depends(get_db),
 ):
     """Create one quiz question (with choices) for a lesson page."""
+    corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
         return service.create_question(lesson_content_id, request.model_dump())
@@ -155,7 +163,7 @@ async def create_page_quiz_question(
     except Exception as e:
         logger.error(
             "Error creating quiz question",
-            extra={"lesson_content_id": lesson_content_id, "error": str(e)},
+            extra={"correlation_id": corr_id, "lesson_content_id": lesson_content_id, "error": str(e)},
         )
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -171,6 +179,7 @@ async def list_page_quiz_questions_admin(
     db: Session = Depends(get_db),
 ):
     """List quiz questions for authoring (optionally including inactive questions)."""
+    corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
         return service.list_questions_for_page_admin(lesson_content_id, include_inactive=include_inactive)
@@ -180,6 +189,7 @@ async def list_page_quiz_questions_admin(
         logger.error(
             "Error listing quiz questions for admin",
             extra={
+                "correlation_id": corr_id,
                 "lesson_content_id": lesson_content_id,
                 "include_inactive": include_inactive,
                 "error": str(e),
@@ -199,6 +209,7 @@ async def get_page_quiz_question(
     db: Session = Depends(get_db),
 ):
     """Get one quiz question for authoring."""
+    corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
         return service.get_question_for_page(lesson_content_id, question_id)
@@ -211,6 +222,7 @@ async def get_page_quiz_question(
         logger.error(
             "Error fetching quiz question",
             extra={
+                "correlation_id": corr_id,
                 "lesson_content_id": lesson_content_id,
                 "question_id": question_id,
                 "error": str(e),
@@ -231,6 +243,7 @@ async def replace_page_quiz_question(
     db: Session = Depends(get_db),
 ):
     """Replace question metadata and choices."""
+    corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
         return service.replace_question(lesson_content_id, question_id, request.model_dump())
@@ -245,6 +258,7 @@ async def replace_page_quiz_question(
         logger.error(
             "Error replacing quiz question",
             extra={
+                "correlation_id": corr_id,
                 "lesson_content_id": lesson_content_id,
                 "question_id": question_id,
                 "error": str(e),
@@ -265,6 +279,7 @@ async def patch_page_quiz_question(
     db: Session = Depends(get_db),
 ):
     """Patch question metadata only."""
+    corr_id = correlation_id_ctx.get()
     payload = request.model_dump(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="No fields provided for update")
@@ -281,6 +296,7 @@ async def patch_page_quiz_question(
         logger.error(
             "Error patching quiz question",
             extra={
+                "correlation_id": corr_id,
                 "lesson_content_id": lesson_content_id,
                 "question_id": question_id,
                 "error": str(e),
@@ -300,6 +316,7 @@ async def delete_page_quiz_question(
     db: Session = Depends(get_db),
 ):
     """Hard delete a quiz question and cascaded children."""
+    corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
         service.delete_question(lesson_content_id, question_id)
@@ -312,6 +329,7 @@ async def delete_page_quiz_question(
         logger.error(
             "Error deleting quiz question",
             extra={
+                "correlation_id": corr_id,
                 "lesson_content_id": lesson_content_id,
                 "question_id": question_id,
                 "error": str(e),
