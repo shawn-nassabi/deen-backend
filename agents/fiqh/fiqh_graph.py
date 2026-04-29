@@ -70,11 +70,12 @@ def _retrieve_node(state: FiqhState) -> dict:
                 "iteration": iteration,
                 "doc_count": 0,
             })
-        logger.info("Fiqh documents retrieved", extra={
-            "correlation_id": correlation_id_ctx.get(),
-            "iteration": iteration,
-            "doc_count": len(new_docs),
-        })
+        else:
+            logger.info("Fiqh documents retrieved", extra={
+                "correlation_id": correlation_id_ctx.get(),
+                "iteration": iteration,
+                "doc_count": len(new_docs),
+            })
     except Exception as exc:
         logger.error("Fiqh retrieve_node error", exc_info=True, extra={
             "correlation_id": correlation_id_ctx.get(),
@@ -111,11 +112,12 @@ def _filter_node(state: FiqhState) -> dict:
                 "iteration": state["iteration"],
                 "doc_count": 0,
             })
-        logger.info("Fiqh evidence filtered", extra={
-            "correlation_id": correlation_id_ctx.get(),
-            "iteration": state["iteration"],
-            "doc_count": len(filtered),
-        })
+        else:
+            logger.info("Fiqh evidence filtered", extra={
+                "correlation_id": correlation_id_ctx.get(),
+                "iteration": state["iteration"],
+                "doc_count": len(filtered),
+            })
     except Exception as exc:
         logger.error("Fiqh filter_node error", exc_info=True, extra={
             "correlation_id": correlation_id_ctx.get(),
