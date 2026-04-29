@@ -16,15 +16,12 @@ The pipeline runs entirely on **Anthropic Claude** (claude-sonnet-4-6 / claude-h
 
 Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
 
-## Current Milestone: v1.3 Sentry Deep Integration — COMPLETE 2026-04-28
+## Shipped Milestones
 
-**Goal:** Instrument all main API endpoints with structured info/warning/error logging that flows to Sentry with correlation_id per request — production-only, opt-in via env var.
-
-**Shipped (all 4 phases):**
-- Phase 13: `core/sentry.py`, `core/context.py`, `core/middleware.py` — SDK init gate, correlation_id ContextVar, CorrelationIdMiddleware
-- Phase 14: All 4 main API routes instrumented with `extra={}` structured logging + `bind_sentry_scope()`
-- Phase 15: `core/pipeline_langgraph.py`, `agents/tools/` — pipeline and tool instrumentation
-- Phase 16: `agents/fiqh/fiqh_graph.py` — FAIR-RAG sub-graph WARNING boundaries + unit tests (FIQH-01..04)
+- **v1.0** (2026-03-25) — FAIR-RAG pipeline built; 4 phases, 12 plans, 39 requirements
+- **v1.1** (2026-04-07) — AWS → Supabase migration; 3 phases, 6 plans
+- **v1.2** (2026-04-10) — OpenAI → Claude + HuggingFace migration; 5 phases, 9 plans
+- **v1.3** (2026-04-28) — Sentry Deep Integration; 4 phases, 8 plans, 22 requirements
 
 ## Requirements
 
@@ -70,10 +67,19 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 - ✓ pgvector columns resized 1536→768 via Alembic migration; backfill script created — v1.2
 - ✓ All OpenAI imports, OPENAI_API_KEY shim, voyageai dependency removed — v1.2
 - ✓ All docs, comments, docstrings updated to reflect Claude + HuggingFace stack — v1.2
+- ✓ `SENTRY_ENABLED` + `SENTRY_DSN` dual-gate — zero Sentry events in local dev; production-only via opt-in env var — v1.3
+- ✓ `CorrelationIdMiddleware` generates server-side UUID per request; all log events carry `correlation_id` — v1.3
+- ✓ `bind_sentry_scope()` sets `session_id`, `user_id`, `endpoint` as searchable Sentry tags per request — v1.3
+- ✓ `before_send` hook redacts `user_query` and request body from Sentry events (GDPR Article 9 compliance) — v1.3
+- ✓ All 4 main API routes (`chat`, `reference`, `hikmah`, `primers`) emit structured `extra={}` logs with `correlation_id`; zero `print()` calls — v1.3
+- ✓ REF-02 data-leak bug fixed — `/references` HTTP 500 no longer exposes raw exception string — v1.3
+- ✓ `core/pipeline_langgraph.py` and `agents/tools/retrieval_tools.py` — zero `print()` calls; node traversal at DEBUG — v1.3
+- ✓ `agents/core/chat_agent.py` — all ~20 `print()` sites replaced with `logger.debug()` / `logger.error(exc_info=True)` — v1.3
+- ✓ `agents/fiqh/fiqh_graph.py` — 10 log calls converted to `extra={}` style; 3 WARNING boundaries at FAIR-RAG silent failure paths; 7 unit tests — v1.3
 
 ### Active
 
-*(v1.3 requirements — defined below in REQUIREMENTS.md)*
+*(Next milestone — run /gsd-new-milestone to define v1.4 requirements)*
 
 ### Out of Scope
 
@@ -89,17 +95,18 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.3 complete (2026-04-28)** — All 4 phases shipped.
+**v1.3 archived (2026-04-28)** — 16 phases, 38 plans across 4 milestones.
 
-- 15 phases, 30 plans across 4 milestones
 - Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
-- Entire codebase instrumented: API routes, pipeline, agent tools, FAIR-RAG sub-graph
+- ~23,274 Python LOC
+- Entire codebase instrumented: API routes, pipeline, agent tools, FAIR-RAG sub-graph; zero `print()` calls
 - `correlation_id` in every log call across all layers; WARNING boundaries at all silent failure paths
-- FIQH-01..04: All 10 fiqh_graph.py log calls converted to `extra={}` style; 3 new WARNINGs at FAIR-RAG failure boundaries; 7 unit tests proving WARNING boundary correctness
 
 **Known tech debt (non-blocking):**
 - Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run in CI — runtime environment confirmation only
 - Phase 8/10 SUMMARY.md files missing `requirements-completed` frontmatter field (documentation only)
+- Phase 13-01 SUMMARY.md missing `requirements-completed` frontmatter (INFRA-01..05 were completed in 13-01 + 13-02)
+- `ExtraFormatter` ANSI colorization not disabled for non-development environments — potential level-field corruption in Sentry if escape codes are transmitted
 
 ## Context
 
@@ -161,4 +168,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-28 — v1.3 complete (Sentry Deep Integration shipped — all 4 phases done)*
+*Last updated: 2026-04-28 after v1.3 milestone archived*

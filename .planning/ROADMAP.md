@@ -45,13 +45,15 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 
 </details>
 
-<details open>
+<details>
 <summary>✅ v1.3 Sentry Deep Integration (Phases 13-16) — SHIPPED 2026-04-28</summary>
 
 - [x] **Phase 13: Sentry Infrastructure** - correlation_id middleware, SENTRY_ENABLED gate, PII scrubber, LoggingIntegration (2/2 plans) — completed 2026-04-26
 - [x] **Phase 14: Route Layer Instrumentation** - structured logging for chat, reference, hikmah, and primers APIs (3/3 plans) — completed 2026-04-26
-- [x] **Phase 15: Pipeline and Tools Instrumentation** - structured logging for core pipeline and agent tools
+- [x] **Phase 15: Pipeline and Tools Instrumentation** - structured logging for core pipeline and agent tools (2/2 plans) — completed 2026-04-28
 - [x] **Phase 16: Fiqh Sub-graph Instrumentation** - structured warnings and searchable fields in fiqh FAIR-RAG loop (1/1 plans) — completed 2026-04-28
+
+Full details: `.planning/milestones/v1.3-ROADMAP.md`
 
 </details>
 
@@ -120,7 +122,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 16-01-PLAN.md — Instrument agents/fiqh/fiqh_graph.py (convert 10 existing log calls to extra={} style, add 3 WARNING boundaries) and create tests/test_fiqh_graph_logging.py (7 unit tests for WARNING boundaries)
+- [x] 16-01-PLAN.md — Instrument agents/fiqh/fiqh_graph.py (convert 10 existing log calls to extra={} style, add 3 WARNING boundaries) and create tests/test_fiqh_graph_logging.py (7 unit tests for WARNING boundaries)
 
 ## Progress
 
@@ -141,4 +143,4 @@ Plans:
 | 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
 | 14. Route Layer Instrumentation | v1.3 | 3/3 | Complete | 2026-04-26 |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete   | 2026-04-28 |
-| 16. Fiqh Sub-graph Instrumentation | v1.3 | 0/1 | Not started | - |
+| 16. Fiqh Sub-graph Instrumentation | v1.3 | 1/1 | Complete | 2026-04-28 |
