@@ -46,7 +46,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 </details>
 
 <details open>
-<summary>🔄 v1.3 Sentry Deep Integration (Phases 13-16) — IN PROGRESS</summary>
+<summary>✅ v1.3 Sentry Deep Integration (Phases 13-16) — SHIPPED 2026-04-28</summary>
 
 - [x] **Phase 13: Sentry Infrastructure** - correlation_id middleware, SENTRY_ENABLED gate, PII scrubber, LoggingIntegration (2/2 plans) — completed 2026-04-26
 - [x] **Phase 14: Route Layer Instrumentation** - structured logging for chat, reference, hikmah, and primers APIs (3/3 plans) — completed 2026-04-26

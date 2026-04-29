@@ -10,22 +10,21 @@ The pipeline runs entirely on **Anthropic Claude** (claude-sonnet-4-6 / claude-h
 - v1.0 — 4 phases, 12 plans, 39 requirements (2026-03-25): FAIR-RAG pipeline built
 - v1.1 — 3 phases, 6 plans (2026-04-07): AWS → Supabase migration
 - v1.2 — 5 phases, 9 plans (2026-04-10): OpenAI → Claude + HuggingFace migration complete
+- v1.3 — 4 phases, 9 plans (2026-04-28): Sentry Deep Integration complete
 
 ## Core Value
 
 Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
 
-## Current Milestone: v1.3 Sentry Deep Integration
+## Current Milestone: v1.3 Sentry Deep Integration — COMPLETE 2026-04-28
 
 **Goal:** Instrument all main API endpoints with structured info/warning/error logging that flows to Sentry with correlation_id per request — production-only, opt-in via env var.
 
-**Target features:**
-- `SENTRY_ENABLED` env var gates all Sentry initialization (defaults false — local dev never sends events)
-- Request-scoped correlation_id middleware — UUID generated per request, propagated through all downstream log calls
-- Sentry scope binding — session_id, user_id, endpoint, and correlation_id attached as context on every Sentry event
-- Replace all `print()` with `logger.*` in `api/chat.py`, `core/pipeline_langgraph.py`, `agents/tools/retrieval_tools.py`, `api/reference.py`
-- Consistent info/warning/error coverage across all main APIs (agentic chat, references, hikmah, primers)
-- Standardize hikmah and primers (already partially logged) to use the same context field pattern
+**Shipped (all 4 phases):**
+- Phase 13: `core/sentry.py`, `core/context.py`, `core/middleware.py` — SDK init gate, correlation_id ContextVar, CorrelationIdMiddleware
+- Phase 14: All 4 main API routes instrumented with `extra={}` structured logging + `bind_sentry_scope()`
+- Phase 15: `core/pipeline_langgraph.py`, `agents/tools/` — pipeline and tool instrumentation
+- Phase 16: `agents/fiqh/fiqh_graph.py` — FAIR-RAG sub-graph WARNING boundaries + unit tests (FIQH-01..04)
 
 ## Requirements
 
@@ -90,13 +89,13 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.3 in progress (Phase 15 complete 2026-04-26)** — Route layer instrumentation shipped.
+**v1.3 complete (2026-04-28)** — All 4 phases shipped.
 
-- 14 phases, 29 plans across 4 milestones
+- 15 phases, 30 plans across 4 milestones
 - Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
-- Phase 13 complete: `core/sentry.py` (SDK init gate), `core/context.py` (correlation_id ContextVar), `core/middleware.py` (CorrelationIdMiddleware), wired into `main.py`
-- Phase 15 complete: `api/reference.py`, `api/hikmah.py`, `api/primers.py`, `api/chat.py` — all instrumented with structured `extra={}` logging, correlation_id in every log call, `bind_sentry_scope()` wired after JWT extraction, all `print()` removed, REF-02 data-leak fixed (`detail="internal_error"`)
-- Next: Phase 15 — pipeline and tools instrumentation (core/pipeline_langgraph.py, agents/tools/)
+- Entire codebase instrumented: API routes, pipeline, agent tools, FAIR-RAG sub-graph
+- `correlation_id` in every log call across all layers; WARNING boundaries at all silent failure paths
+- FIQH-01..04: All 10 fiqh_graph.py log calls converted to `extra={}` style; 3 new WARNINGs at FAIR-RAG failure boundaries; 7 unit tests proving WARNING boundary correctness
 
 **Known tech debt (non-blocking):**
 - Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run in CI — runtime environment confirmation only
@@ -162,4 +161,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-26 — Phase 15 complete (Route Layer Instrumentation shipped)*
+*Last updated: 2026-04-28 — v1.3 complete (Sentry Deep Integration shipped — all 4 phases done)*
