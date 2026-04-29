@@ -41,3 +41,36 @@ A speedup of 1.0 means full serialisation; the Phase 7 gate requires
 }
 ```
 
+## phase-1 chain.astream (DEE-40) — 2026-04-29T19:22:59+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.9699**
+- p50_s / p95_s: 0.9632 / 0.9686
+- throughput_rps: 10.3107
+- speedup_vs_serial: **7.733**
+
+```json
+{
+  "label": "phase-1 chain.astream (DEE-40)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.9699,
+  "p50_s": 0.9632,
+  "p95_s": 0.9686,
+  "min_s": 0.958,
+  "max_s": 0.9686,
+  "mean_s": 0.9629,
+  "throughput_rps": 10.3107,
+  "speedup_vs_serial": 7.733,
+  "timestamp": "2026-04-29T19:22:59+00:00"
+}
+```
+
