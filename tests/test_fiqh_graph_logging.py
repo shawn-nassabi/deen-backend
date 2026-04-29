@@ -4,8 +4,11 @@ tests/test_fiqh_graph_logging.py
 Unit tests for structured logging in agents/fiqh/fiqh_graph.py.
 Tests that WARNING events fire at the correct FAIR-RAG failure boundaries.
 
-Patch targets use source modules (not fiqh_graph.py module level)
-because all imports are deferred inside function bodies.
+NOTE: Patch targets point to the SOURCE module namespace, not fiqh_graph's namespace.
+This works because each node function uses a deferred `from ... import X` on every call,
+which re-binds the local name to the patched object each time the node runs.
+WARNING: If these deferred imports are ever hoisted to module-level in fiqh_graph.py,
+patch targets must change to "agents.fiqh.fiqh_graph.retrieve_fiqh_documents" etc.
 """
 import logging
 import sys
