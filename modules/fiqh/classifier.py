@@ -65,11 +65,11 @@ _prompt = ChatPromptTemplate.from_messages([
 
 def classify_fiqh_query(query: str) -> str:
     """
-    Classifies a fiqh query into one of 6 categories.
-    Never raises — returns OUT_OF_SCOPE_FIQH on any error.
+    Sync variant kept for legacy callers. Prefer `aclassify_fiqh_query` from
+    inside an event loop (DEE-44).
 
-    Uses with_structured_output to reliably extract the category
-    regardless of Claude preamble text in the response.
+    Classifies a fiqh query into one of 6 categories. Never raises — returns
+    OUT_OF_SCOPE_FIQH on any error.
 
     Returns one of: VALID_OBVIOUS, VALID_SMALL, VALID_LARGE, VALID_REASONER,
                     OUT_OF_SCOPE_FIQH, UNETHICAL
@@ -78,6 +78,17 @@ def classify_fiqh_query(query: str) -> str:
         model = chat_models.get_classifier_model()
         structured_model = model.with_structured_output(FiqhCategory)
         result = structured_model.invoke(_prompt.format_messages(query=query))
+        return result.category
+    except Exception:
+        return "OUT_OF_SCOPE_FIQH"
+
+
+async def aclassify_fiqh_query(query: str) -> str:
+    """Native async variant of `classify_fiqh_query`."""
+    try:
+        model = chat_models.get_classifier_model()
+        structured_model = model.with_structured_output(FiqhCategory)
+        result = await structured_model.ainvoke(_prompt.format_messages(query=query))
         return result.category
     except Exception:
         return "OUT_OF_SCOPE_FIQH"

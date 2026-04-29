@@ -65,36 +65,49 @@ def _format_evidence(docs: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _insufficient_fallback(query: str) -> SEAResult:
+    return SEAResult(
+        findings=[],
+        verdict="INSUFFICIENT",
+        confirmed_facts=[],
+        gaps=[query],
+    )
+
+
 def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
     """
+    Sync variant kept for legacy callers. Prefer `aassess_evidence` from
+    inside an event loop (DEE-44).
+
     Deconstructs the query into required findings, checks each against evidence,
     returns a structured sufficiency verdict with confirmed facts and gaps.
     Never raises — returns INSUFFICIENT fallback on any error.
-
-    Args:
-        query: The original fiqh query string
-        docs: List of doc dicts with chunk_id, metadata, page_content keys
-
-    Returns:
-        SEAResult: Structured assessment with findings, verdict, confirmed_facts, gaps.
-                   Returns fallback SEAResult(findings=[], verdict="INSUFFICIENT",
-                   confirmed_facts=[], gaps=[query]) on any error.
     """
     try:
         model = chat_models.get_classifier_model()
         structured_model = model.with_structured_output(SEAResult)
-        result = structured_model.invoke(
+        return structured_model.invoke(
             _prompt.format_messages(
                 query=query,
                 evidence=_format_evidence(docs),
             )
         )
-        return result
     except Exception as e:
         logger.warning("[FIQH_SEA] assess_evidence error, returning INSUFFICIENT fallback: %s", e)
-        return SEAResult(
-            findings=[],
-            verdict="INSUFFICIENT",
-            confirmed_facts=[],
-            gaps=[query],
+        return _insufficient_fallback(query)
+
+
+async def aassess_evidence(query: str, docs: list[dict]) -> SEAResult:
+    """Native async variant of `assess_evidence`."""
+    try:
+        model = chat_models.get_classifier_model()
+        structured_model = model.with_structured_output(SEAResult)
+        return await structured_model.ainvoke(
+            _prompt.format_messages(
+                query=query,
+                evidence=_format_evidence(docs),
+            )
         )
+    except Exception as e:
+        logger.warning("[FIQH_SEA] aassess_evidence error, returning INSUFFICIENT fallback: %s", e)
+        return _insufficient_fallback(query)

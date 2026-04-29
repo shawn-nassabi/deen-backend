@@ -33,7 +33,7 @@ from scripts.loadtest_agentic import _emit_snapshot, _run_in_process, parse_args
 
 _BASELINE_PATH = Path(__file__).resolve().parent.parent / "documentation" / "async_baseline.md"
 
-_DEFAULT_LABEL = "phase-4 async-redis (DEE-43)"
+_DEFAULT_LABEL = "phase-5 async-fiqh-and-routes (DEE-44)"
 
 
 def _build_args(n: int, label: str):

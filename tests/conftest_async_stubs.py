@@ -287,8 +287,17 @@ def install_pipeline_stubs(cfg: Optional[StubConfig] = None):
         retriever_mod.aretrieve_quran_documents = _astub_retrieve_quran
 
     # --- Fiqh classifier stub (skip the fiqh sub-graph entirely) ------------
+    # ChatAgent._fiqh_classification_node now awaits `aclassify_fiqh_query`
+    # directly (DEE-44); patch both for forward/backward compat.
     original_classify_fiqh = fiqh_classifier_mod.classify_fiqh_query
+    original_aclassify_fiqh = getattr(fiqh_classifier_mod, "aclassify_fiqh_query", None)
     fiqh_classifier_mod.classify_fiqh_query = lambda query: "OUT_OF_SCOPE_FIQH"
+
+    async def _astub_classify_fiqh(query):
+        return "OUT_OF_SCOPE_FIQH"
+
+    if original_aclassify_fiqh is not None:
+        fiqh_classifier_mod.aclassify_fiqh_query = _astub_classify_fiqh
 
     try:
         yield cfg
@@ -303,6 +312,8 @@ def install_pipeline_stubs(cfg: Optional[StubConfig] = None):
             retriever_mod.aretrieve_sunni_documents = originals["asunni"]
             retriever_mod.aretrieve_quran_documents = originals["aquran"]
         fiqh_classifier_mod.classify_fiqh_query = original_classify_fiqh
+        if original_aclassify_fiqh is not None:
+            fiqh_classifier_mod.aclassify_fiqh_query = original_aclassify_fiqh
 
 
 # --- Concurrency harness ---------------------------------------------------
