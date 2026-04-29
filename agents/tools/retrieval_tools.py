@@ -6,6 +6,10 @@ These tools fetch relevant documents from the knowledge base.
 from langchain_core.tools import tool
 from modules.retrieval import retriever
 from typing import Dict, List
+import logging
+from core.context import correlation_id as correlation_id_ctx
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -52,7 +56,10 @@ def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str
             "query_used": query
         }
     except Exception as e:
-        print(f"[retrieve_shia_documents_tool] Error: {e}")
+        logger.error("Retrieval error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "error": str(e),
+        })
         return {
             "documents": [],
             "count": 0,
@@ -111,7 +118,10 @@ def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[st
             "query_used": query
         }
     except Exception as e:
-        print(f"[retrieve_sunni_documents_tool] Error: {e}")
+        logger.error("Retrieval error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "error": str(e),
+        })
         return {
             "documents": [],
             "count": 0,
@@ -169,7 +179,10 @@ def retrieve_combined_documents_tool(
             "query_used": query
         }
     except Exception as e:
-        print(f"[retrieve_combined_documents_tool] Error: {e}")
+        logger.error("Retrieval error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "error": str(e),
+        })
         return {
             "documents": [],
             "shia_count": 0,
@@ -229,7 +242,10 @@ def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, 
             "query_used": query
         }
     except Exception as e:
-        print(f"[retrieve_quran_tafsir_tool] Error: {e}")
+        logger.error("Retrieval error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "error": str(e),
+        })
         return {
             "documents": [],
             "count": 0,

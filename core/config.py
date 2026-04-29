@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ENV = os.getenv("ENV", "development")
+SENTRY_DSN = os.getenv("SENTRY_DSN")  # Optional — absence disables Sentry silently
 
 # Retrieve API Keys
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
