@@ -74,3 +74,69 @@ A speedup of 1.0 means full serialisation; the Phase 7 gate requires
 }
 ```
 
+## phase-1 chain.astream (DEE-40) — 2026-04-29T19:31:10+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.9542**
+- p50_s / p95_s: 0.9489 / 0.9536
+- throughput_rps: 10.4802
+- speedup_vs_serial: **7.8601**
+
+```json
+{
+  "label": "phase-1 chain.astream (DEE-40)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.9542,
+  "p50_s": 0.9489,
+  "p95_s": 0.9536,
+  "min_s": 0.8378,
+  "max_s": 0.9536,
+  "mean_s": 0.9269,
+  "throughput_rps": 10.4802,
+  "speedup_vs_serial": 7.8601,
+  "timestamp": "2026-04-29T19:31:10+00:00"
+}
+```
+
+## phase-2 async-nodes (DEE-41) — 2026-04-29T19:33:38+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.9451**
+- p50_s / p95_s: 0.9386 / 0.9423
+- throughput_rps: 10.5806
+- speedup_vs_serial: **7.9354**
+
+```json
+{
+  "label": "phase-2 async-nodes (DEE-41)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.9451,
+  "p50_s": 0.9386,
+  "p95_s": 0.9423,
+  "min_s": 0.9311,
+  "max_s": 0.9423,
+  "mean_s": 0.9377,
+  "throughput_rps": 10.5806,
+  "speedup_vs_serial": 7.9354,
+  "timestamp": "2026-04-29T19:33:38+00:00"
+}
+```
+

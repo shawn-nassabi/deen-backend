@@ -410,7 +410,7 @@ async def chat_pipeline_streaming_agentic(
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 
 
-def chat_pipeline_agentic(
+async def chat_pipeline_agentic(
     user_query: str,
     session_id: str,
     target_language: str = "english",
@@ -437,7 +437,7 @@ def chat_pipeline_agentic(
     agent_config = config or DEFAULT_AGENT_CONFIG
     agent = ChatAgent(agent_config)
 
-    final_state = agent.invoke(
+    final_state = await agent.ainvoke(
         user_query=user_query,
         session_id=session_id,
         target_language=target_language,

@@ -3,6 +3,8 @@ Retrieval tools for the LangGraph agent.
 These tools fetch relevant documents from the knowledge base.
 """
 
+import asyncio
+
 from langchain_core.tools import tool
 from modules.retrieval import retriever
 from typing import Dict, List
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 @tool
-def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str, any]:
+async def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str, any]:
     """
     Retrieve relevant documents from the Shia Islamic knowledge base.
     
@@ -47,8 +49,11 @@ def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str
     - 7-10: For complex questions needing comprehensive coverage
     """
     try:
-        docs = retriever.retrieve_shia_documents(query, num_documents)
-        
+        # Phase 3 (DEE-42) introduces native `aretrieve_shia_documents` backed by
+        # PineconeVectorStore.asimilarity_search_with_score; until then run the
+        # sync retriever off the event loop so concurrent agents don't queue.
+        docs = await asyncio.to_thread(retriever.retrieve_shia_documents, query, num_documents)
+
         return {
             "documents": docs,
             "count": len(docs),
@@ -70,7 +75,7 @@ def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str
 
 
 @tool
-def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[str, any]:
+async def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[str, any]:
     """
     Retrieve relevant documents from the Sunni Islamic knowledge base.
     
@@ -109,8 +114,8 @@ def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[st
     - 4-5: When user specifically asks for Sunni perspective
     """
     try:
-        docs = retriever.retrieve_sunni_documents(query, num_documents)
-        
+        docs = await asyncio.to_thread(retriever.retrieve_sunni_documents, query, num_documents)
+
         return {
             "documents": docs,
             "count": len(docs),
@@ -132,7 +137,7 @@ def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[st
 
 
 @tool
-def retrieve_combined_documents_tool(
+async def retrieve_combined_documents_tool(
     query: str, 
     shia_num_documents: int = 5, 
     sunni_num_documents: int = 2
@@ -166,11 +171,15 @@ def retrieve_combined_documents_tool(
     - When query complexity requires different query formulations for each source
     """
     try:
-        shia_docs = retriever.retrieve_shia_documents(query, shia_num_documents)
-        sunni_docs = retriever.retrieve_sunni_documents(query, sunni_num_documents)
-        
+        # Fire both retrievals concurrently so the combined call doesn't pay
+        # 2x the latency of a single source.
+        shia_docs, sunni_docs = await asyncio.gather(
+            asyncio.to_thread(retriever.retrieve_shia_documents, query, shia_num_documents),
+            asyncio.to_thread(retriever.retrieve_sunni_documents, query, sunni_num_documents),
+        )
+
         combined_docs = shia_docs + sunni_docs
-        
+
         return {
             "documents": combined_docs,
             "shia_count": len(shia_docs),
@@ -194,7 +203,7 @@ def retrieve_combined_documents_tool(
 
 
 @tool
-def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, any]:
+async def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, any]:
     """
     Retrieve Quran verses and Tafsir (exegesis/explanation) from the Quran knowledge base.
     
@@ -233,8 +242,8 @@ def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, 
     - 3-5: For broader Quranic themes or comparative topics
     """
     try:
-        docs = retriever.retrieve_quran_documents(query, num_documents)
-        
+        docs = await asyncio.to_thread(retriever.retrieve_quran_documents, query, num_documents)
+
         return {
             "documents": docs,
             "count": len(docs),

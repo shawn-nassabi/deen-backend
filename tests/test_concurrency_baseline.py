@@ -33,7 +33,7 @@ from scripts.loadtest_agentic import _emit_snapshot, _run_in_process, parse_args
 
 _BASELINE_PATH = Path(__file__).resolve().parent.parent / "documentation" / "async_baseline.md"
 
-_DEFAULT_LABEL = "phase-1 chain.astream (DEE-40)"
+_DEFAULT_LABEL = "phase-2 async-nodes (DEE-41)"
 
 
 def _build_args(n: int, label: str):
