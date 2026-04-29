@@ -3,7 +3,9 @@ __pycache__/
 *.py[cod]
 *.so
 *.DS_Store
+
 feedback.csv
+
 # 🔹 Ignore Virtual Environment
 venv/
 venv1/

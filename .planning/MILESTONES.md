@@ -1,5 +1,26 @@
 # Milestones
 
+## v1.3 Sentry Deep Integration (Shipped: 2026-04-28)
+
+**Phases completed:** 4 phases, 8 plans
+
+**Timeline:** 2026-04-26 → 2026-04-28 (3 days)
+**Files changed:** 64 files (+10,017 / -217 lines)
+**Python LOC:** ~23,274 total
+
+**Key accomplishments:**
+
+1. `core/context.py`, `core/middleware.py`, `core/sentry.py` — correlation_id ContextVar, server-side UUID middleware, dual-gated Sentry SDK init with GDPR-compliant PII scrubbing and `before_send` hook
+2. `main.py` wired with side-effect `import core.sentry`, CorrelationIdMiddleware registered, `catch_exceptions_mw` refactored to `logger.error(exc_info=True)` — zero `capture_exception()` calls
+3. All 4 main API routes instrumented with `extra={}` structured logging, `bind_sentry_scope()`, and zero `print()` calls; REF-02 data-leak bug closed
+4. `core/pipeline_langgraph.py` and `agents/tools/retrieval_tools.py` — 9 `print()` calls replaced with `logger.*`; node traversal at DEBUG to avoid Sentry log quota overrun
+5. `agents/core/chat_agent.py` — all ~20 `print()` calls across 9 methods converted to `logger.debug()` / `logger.error(exc_info=True)` with `correlation_id` in every `extra={}`
+6. `agents/fiqh/fiqh_graph.py` — 10 existing log calls converted to `extra={}` style; 3 new WARNING boundaries at FAIR-RAG silent failure paths; 7 unit tests in `tests/test_fiqh_graph_logging.py` proving all boundaries fire correctly
+
+**Requirements:** 22/22 complete (INFRA-01..05, CHAT-01..03, REF-01..03, HIK-01..02, PRIM-01, PIPE-01..02, TOOL-01..02, FIQH-01..04)
+
+---
+
 ## v1.2 Claude Migration (Shipped: 2026-04-10)
 
 **Phases completed:** 5 phases, 9 plans, 20 tasks

@@ -10,10 +10,18 @@ The pipeline runs entirely on **Anthropic Claude** (claude-sonnet-4-6 / claude-h
 - v1.0 — 4 phases, 12 plans, 39 requirements (2026-03-25): FAIR-RAG pipeline built
 - v1.1 — 3 phases, 6 plans (2026-04-07): AWS → Supabase migration
 - v1.2 — 5 phases, 9 plans (2026-04-10): OpenAI → Claude + HuggingFace migration complete
+- v1.3 — 4 phases, 9 plans (2026-04-28): Sentry Deep Integration complete
 
 ## Core Value
 
 Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
+
+## Shipped Milestones
+
+- **v1.0** (2026-03-25) — FAIR-RAG pipeline built; 4 phases, 12 plans, 39 requirements
+- **v1.1** (2026-04-07) — AWS → Supabase migration; 3 phases, 6 plans
+- **v1.2** (2026-04-10) — OpenAI → Claude + HuggingFace migration; 5 phases, 9 plans
+- **v1.3** (2026-04-28) — Sentry Deep Integration; 4 phases, 8 plans, 22 requirements
 
 ## Requirements
 
@@ -59,10 +67,19 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 - ✓ pgvector columns resized 1536→768 via Alembic migration; backfill script created — v1.2
 - ✓ All OpenAI imports, OPENAI_API_KEY shim, voyageai dependency removed — v1.2
 - ✓ All docs, comments, docstrings updated to reflect Claude + HuggingFace stack — v1.2
+- ✓ `SENTRY_ENABLED` + `SENTRY_DSN` dual-gate — zero Sentry events in local dev; production-only via opt-in env var — v1.3
+- ✓ `CorrelationIdMiddleware` generates server-side UUID per request; all log events carry `correlation_id` — v1.3
+- ✓ `bind_sentry_scope()` sets `session_id`, `user_id`, `endpoint` as searchable Sentry tags per request — v1.3
+- ✓ `before_send` hook redacts `user_query` and request body from Sentry events (GDPR Article 9 compliance) — v1.3
+- ✓ All 4 main API routes (`chat`, `reference`, `hikmah`, `primers`) emit structured `extra={}` logs with `correlation_id`; zero `print()` calls — v1.3
+- ✓ REF-02 data-leak bug fixed — `/references` HTTP 500 no longer exposes raw exception string — v1.3
+- ✓ `core/pipeline_langgraph.py` and `agents/tools/retrieval_tools.py` — zero `print()` calls; node traversal at DEBUG — v1.3
+- ✓ `agents/core/chat_agent.py` — all ~20 `print()` sites replaced with `logger.debug()` / `logger.error(exc_info=True)` — v1.3
+- ✓ `agents/fiqh/fiqh_graph.py` — 10 log calls converted to `extra={}` style; 3 WARNING boundaries at FAIR-RAG silent failure paths; 7 unit tests — v1.3
 
 ### Active
 
-*(Next milestone requirements go here — defined during /gsd:new-milestone)*
+*(Next milestone — run /gsd-new-milestone to define v1.4 requirements)*
 
 ### Out of Scope
 
@@ -78,16 +95,18 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.2 shipped 2026-04-10** — Pipeline fully migrated from OpenAI to Anthropic Claude + HuggingFace.
+**v1.3 archived (2026-04-28)** — 16 phases, 38 plans across 4 milestones.
 
-- 12 phases, 24 plans across 3 milestones
-- Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace
-- Zero OpenAI dependencies in application code
-- All 23 v1.2 requirements satisfied
+- Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
+- ~23,274 Python LOC
+- Entire codebase instrumented: API routes, pipeline, agent tools, FAIR-RAG sub-graph; zero `print()` calls
+- `correlation_id` in every log call across all layers; WARNING boundaries at all silent failure paths
 
 **Known tech debt (non-blocking):**
 - Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run in CI — runtime environment confirmation only
 - Phase 8/10 SUMMARY.md files missing `requirements-completed` frontmatter field (documentation only)
+- Phase 13-01 SUMMARY.md missing `requirements-completed` frontmatter (INFRA-01..05 were completed in 13-01 + 13-02)
+- `ExtraFormatter` ANSI colorization not disabled for non-development environments — potential level-field corruption in Sentry if escape codes are transmitted
 
 ## Context
 
@@ -126,6 +145,10 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 | HuggingFace over Voyage AI for embeddings | all-mpnet-base-v2 already installed, free, no API key needed; Voyage AI costs money and adds dependency | ✓ 768-dim vectors, zero additional cost or API key requirement |
 | with_structured_output for fiqh classifier | Claude returns preamble text before JSON; structured output bypasses parsing fragility | ✓ Preamble-safe classification in Phase 9 |
 | AIMessage filter before LLM history | Claude errors on consecutive tool-call messages without intermediate assistant turn | ✓ D-08 filter in `_agent_node` prevents tool-call sequence crashes |
+| Side-effect import for Sentry init (`import core.sentry`) | Keeps main.py clean; module-level init fires once at import time via Python's sys.modules caching | ✓ No `sentry_sdk.init()` in main.py; init guaranteed single-fire by import machinery |
+| logger.error(exc_info=True) over capture_exception() | LoggingIntegration auto-captures ERROR log events — calling both creates duplicate Sentry events | ✓ `capture_exception()` removed from catch_exceptions_mw; zero duplicate events |
+| Never read incoming X-Correlation-ID header | D-03 threat: clients could inject forged IDs to manipulate Sentry trace correlation | ✓ CorrelationIdMiddleware generates server-side UUID only; client header ignored |
+| FastApiIntegration excluded from integrations list | sentry-sdk[fastapi] auto-enables FastApiIntegration; explicit inclusion causes duplicate setup | ✓ No FastApiIntegration in integrations=[...] list |
 
 ## Constraints
 
@@ -145,4 +168,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-10 after v1.2 milestone — OpenAI → Anthropic Claude + HuggingFace migration complete; 12 phases, 24 plans across 3 milestones*
+*Last updated: 2026-04-28 after v1.3 milestone archived*
