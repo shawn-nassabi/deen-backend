@@ -10,6 +10,7 @@ Call pattern: fiqh_subgraph.invoke({...FiqhState initial dict...})
 """
 from __future__ import annotations
 import logging
+from core.context import correlation_id as correlation_id_ctx
 from typing import Literal
 
 from langgraph.graph import END, StateGraph
@@ -32,9 +33,14 @@ def _decompose_node(state: FiqhState) -> dict:
     })
     try:
         sub_queries = decompose_query(state["query"])
-        logger.info("[FIQH_GRAPH] Decomposed into %d sub-queries", len(sub_queries))
+        logger.info("Fiqh query decomposed", extra={
+            "correlation_id": correlation_id_ctx.get(),
+        })
     except Exception as exc:
-        logger.error("[FIQH_GRAPH] decompose_node error: %s", exc)
+        logger.error("Fiqh decompose_node error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "error": str(exc),
+        })
         sub_queries = [state["query"]]
 
     # prior_queries starts empty; seed with original query on first decompose
@@ -64,9 +70,23 @@ def _retrieve_node(state: FiqhState) -> dict:
 
     try:
         new_docs = retrieve_fiqh_documents(current_query)
-        logger.info("[FIQH_GRAPH] Retrieved %d docs for query: %s", len(new_docs), current_query[:60])
+        if len(new_docs) == 0:
+            logger.warning("Fiqh retrieval returned zero documents", extra={
+                "correlation_id": correlation_id_ctx.get(),
+                "iteration": iteration,
+                "doc_count": 0,
+            })
+        logger.info("Fiqh documents retrieved", extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": iteration,
+            "doc_count": len(new_docs),
+        })
     except Exception as exc:
-        logger.error("[FIQH_GRAPH] retrieve_node error: %s", exc)
+        logger.error("Fiqh retrieve_node error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": iteration,
+            "error": str(exc),
+        })
         new_docs = []
 
     # Accumulate unique docs by chunk_id (D-03 pattern)
@@ -94,13 +114,23 @@ def _filter_node(state: FiqhState) -> dict:
     })
     try:
         filtered = filter_evidence(state["query"], state["accumulated_docs"])
-        logger.info(
-            "[FIQH_GRAPH] Filtered: %d -> %d docs",
-            len(state["accumulated_docs"]),
-            len(filtered),
-        )
+        if len(filtered) == 0:
+            logger.warning("Fiqh evidence filter removed all documents", extra={
+                "correlation_id": correlation_id_ctx.get(),
+                "iteration": state["iteration"],
+                "doc_count": 0,
+            })
+        logger.info("Fiqh evidence filtered", extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": state["iteration"],
+            "doc_count": len(filtered),
+        })
     except Exception as exc:
-        logger.error("[FIQH_GRAPH] filter_node error: %s", exc)
+        logger.error("Fiqh filter_node error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": state["iteration"],
+            "error": str(exc),
+        })
         filtered = list(state["accumulated_docs"])  # fail open
 
     return {
@@ -120,9 +150,18 @@ def _assess_node(state: FiqhState) -> dict:
     try:
         sea_result = assess_evidence(state["query"], state["accumulated_docs"])
         verdict = sea_result.verdict
-        logger.info("[FIQH_GRAPH] SEA verdict: %s (iteration %d)", verdict, state["iteration"])
+        logger.info("Fiqh SEA assessment complete", extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": state["iteration"],
+            "verdict": verdict,
+            "doc_count": len(state["accumulated_docs"]),
+        })
     except Exception as exc:
-        logger.error("[FIQH_GRAPH] assess_node error: %s", exc)
+        logger.error("Fiqh assess_node error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": state["iteration"],
+            "error": str(exc),
+        })
         sea_result = SEAResult(
             findings=[],
             verdict="INSUFFICIENT",
@@ -152,9 +191,14 @@ def _refine_node(state: FiqhState) -> dict:
             sea_result=state["sea_result"],
             prior_queries=state["prior_queries"],
         )
-        logger.info("[FIQH_GRAPH] Refined into %d queries", len(refinements))
+        logger.info("Fiqh query refined", extra={
+            "correlation_id": correlation_id_ctx.get(),
+        })
     except Exception as exc:
-        logger.error("[FIQH_GRAPH] refine_node error: %s", exc)
+        logger.error("Fiqh refine_node error", exc_info=True, extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "error": str(exc),
+        })
         refinements = [state["query"]]
 
     prior = list(state["prior_queries"])
@@ -178,11 +222,22 @@ def _route_after_assess(state: FiqhState) -> Literal["exit", "refine"]:
     Otherwise route to refine -> retrieve for another iteration.
     """
     if state["verdict"] == "SUFFICIENT" or state["iteration"] >= 3:
-        logger.info(
-            "[FIQH_GRAPH] Exiting after iteration %d (verdict=%s)",
-            state["iteration"],
-            state["verdict"],
-        )
+        logger.info("Fiqh FAIR-RAG exiting", extra={
+            "correlation_id": correlation_id_ctx.get(),
+            "iteration": state["iteration"],
+            "verdict": state["verdict"],
+            "doc_count": len(state["accumulated_docs"]),
+        })
+        if state["iteration"] >= 3 and state["verdict"] != "SUFFICIENT":
+            logger.warning(
+                "Fiqh FAIR-RAG exhausted max iterations with insufficient evidence",
+                extra={
+                    "correlation_id": correlation_id_ctx.get(),
+                    "iteration": state["iteration"],
+                    "verdict": state["verdict"],
+                    "doc_count": len(state["accumulated_docs"]),
+                },
+            )
         return "exit"
     return "refine"
 
