@@ -32,6 +32,7 @@ from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
 from core.context import correlation_id as correlation_id_ctx
+from core.chat_models import make_cached_system_message
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ class ChatAgent:
         ]
 
         if state["iterations"] == 1:
-            messages.insert(0, SystemMessage(content=AGENT_SYSTEM_PROMPT))
+            messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
             messages.append(HumanMessage(content=self._build_initial_user_message(state)))
         else:
             messages.append(HumanMessage(content=self._build_iteration_summary(state)))
@@ -241,7 +242,7 @@ class ChatAgent:
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
         generation_messages = [
-            SystemMessage(content=AGENT_SYSTEM_PROMPT),
+            make_cached_system_message(AGENT_SYSTEM_PROMPT),
             HumanMessage(
                 content=f"""User query: {state['user_query']}
 
