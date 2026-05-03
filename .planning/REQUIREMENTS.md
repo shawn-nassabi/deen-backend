@@ -46,20 +46,20 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CACHE-01 | — | Pending |
-| CACHE-02 | — | Pending |
-| CACHE-03 | — | Pending |
-| CACHE-04 | — | Pending |
-| STRUCT-01 | — | Pending |
-| STRUCT-02 | — | Pending |
-| OBS-01 | — | Pending |
-| OBS-02 | — | Pending |
+| CACHE-01 | Phase 17 | Pending |
+| CACHE-02 | Phase 17 | Pending |
+| CACHE-03 | Phase 17 | Pending |
+| CACHE-04 | Phase 17 | Pending |
+| STRUCT-01 | Phase 17 | Pending |
+| STRUCT-02 | Phase 18 | Pending |
+| OBS-01 | Phase 19 | Pending |
+| OBS-02 | Phase 19 | Pending |
 
 **Coverage:**
 - v1.4 requirements: 8 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 8 ⚠
+- Mapped to phases: 8 (100%)
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-03*
-*Last updated: 2026-05-03 after initial definition*
+*Last updated: 2026-05-03 — traceability filled after roadmap creation*

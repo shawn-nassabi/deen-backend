@@ -7,7 +7,7 @@ stopped_at: ""
 last_updated: "2026-05-03T00:00:00.000Z"
 last_activity: 2026-05-03
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,24 +21,24 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v1.3 milestone archived)
 
 **Core value:** Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
-**Current focus:** Planning next milestone (run /gsd-new-milestone)
+**Current focus:** v1.4 LLM Input Caching — roadmap defined, ready to plan Phase 17
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-05-03 — Milestone v1.4 started
+Status: Roadmap defined — ready for /gsd-plan-phase 17
+Last activity: 2026-05-03 — Roadmap created for v1.4
 
-Progress bar: `░░░░░░░░░░` 0% (0/0 phases complete)
+Progress bar: `░░░░░░░░░░` 0% (0/3 phases complete)
 
 ## Performance Metrics
 
-| Metric | v1.0 | v1.1 | v1.2 | v1.3 |
-|--------|------|------|------|------|
-| Phases | 4 | 3 | 5 | 4 (planned) |
-| Plans | 12 | 6 | 9 | TBD |
-| Requirements | 39 | 8 | 23 | 20 |
+| Metric | v1.0 | v1.1 | v1.2 | v1.3 | v1.4 |
+|--------|------|------|------|------|------|
+| Phases | 4 | 3 | 5 | 4 | 3 |
+| Plans | 12 | 6 | 9 | 8 | TBD |
+| Requirements | 39 | 8 | 23 | 22 | 8 |
 
 ## Accumulated Context
 
@@ -46,21 +46,23 @@ Progress bar: `░░░░░░░░░░` 0% (0/0 phases complete)
 
 All decisions logged in PROJECT.md Key Decisions table.
 
-### v1.3 Phase Structure
+### v1.4 Phase Structure
 
 | Phase | Focus | Requirements | Depends on |
 |-------|-------|--------------|------------|
-| 13 | Sentry Infrastructure | INFRA-01..05 | Nothing |
-| 14 | Route Layer Instrumentation | CHAT-01..03, REF-01..03, HIK-01..02, PRIM-01 | Phase 13 |
-| 15 | Pipeline and Tools Instrumentation | PIPE-01..02, TOOL-01..02 | Phase 13 |
-| 16 | Fiqh Sub-graph Instrumentation | FIQH-01..04 | Phase 13 |
+| 17 | ChatAgent Caching Foundation | CACHE-01, CACHE-02, CACHE-03, CACHE-04, STRUCT-01 | Nothing |
+| 18 | Module Prompt Restructuring | STRUCT-02 | Phase 17 (make_cached_system_message helper) |
+| 19 | Observability and Verification | OBS-01, OBS-02 | Phase 17 (cache metrics flowing) |
 
-### Key Constraints for v1.3
+### Key Constraints for v1.4
 
-- `sentry-sdk` pinned at 2.27.0 — `_experiments.enable_logs` stays in `_experiments` (top-level only valid at >= 2.35.0)
-- `send_default_pii=True` must NOT be set — `before_send` hook required for GDPR Article 9 compliance (Islamic religious content = special-category data)
-- Per-node LangGraph traversal logs at DEBUG only — avoids Sentry log quota overrun at scale
-- No duplicate Sentry events: use `logger.error(exc_info=True)` OR `capture_exception()`, not both
+- CACHE-01 and CACHE-02 must be implemented together — system prompt alone (1,427 tokens) is below the 2,048-token minimum; only clears the threshold when combined with tool definitions (~3,722 tokens) as a single cached prefix
+- STRUCT-01 (make_cached_system_message helper) must exist before STRUCT-02 call sites can be refactored — Phase 17 delivers the helper, Phase 18 uses it
+- Never cache `modules/enhancement/enhancer.py` — Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens; caching would guarantee cost increase with zero hits
+- Never put `cache_control` inside `ToolMessage.content[]` — causes `invalid_cache` API error (GitHub #34920)
+- Use `response.response_metadata["usage"]` (raw Anthropic dict) for cache metrics, not `response.usage_metadata` — LangChain wrapper double-counts cached tokens on streaming calls (GitHub #32818)
+- `AnthropicPromptCachingMiddleware` does not exist in `langchain-anthropic==0.3.22` — do not attempt to import it
+- `ChatPromptTemplate.format_messages()` silently strips `cache_control` — all system prompts must use `SystemMessage(content=[...])` content-block lists (GitHub #26701)
 
 ### Pending Todos
 
@@ -68,8 +70,8 @@ None.
 
 ### Blockers/Concerns
 
-- Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run — runtime environment confirmation only, not a code gap
-- bind_sentry_scope() exists in core/sentry.py but call sites wired in Phase 14+ — correlation_id Sentry tag not yet visible in events (expected)
+- Exact combined token count for ChatAgent (tools + system prompt) is estimated at ~5,149 — must be measured with tiktoken or Anthropic token counter as first implementation step in Phase 17 to confirm caching eligibility
+- `langchain-anthropic` version bump from 0.3.22 to 0.3.25 carries compatibility risk with `langchain==0.3.27` — leave at 0.3.22 until explicitly verified
 
 ### Quick Tasks Completed
 
@@ -81,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-28
-Stopped at: v1.3 milestone archived
-Next action: /gsd-new-milestone to start v1.4 planning
+Last session: 2026-05-03
+Stopped at: Roadmap created for v1.4 LLM Input Caching
+Next action: /gsd-plan-phase 17
