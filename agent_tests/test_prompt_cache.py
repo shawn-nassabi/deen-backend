@@ -29,26 +29,35 @@ from langchain_core.messages import AIMessage
 from agents.core.chat_agent import ChatAgent
 
 
-_TEST_QUERY = "What is the ruling on performing wudu with tap water?"
+# Must be a non-fiqh Islamic query — fiqh queries route to fiqh_subgraph which
+# bypasses _agent_node (where self.llm with the cached bind_tools lives).
+_TEST_QUERY = "What does Islam teach about the importance of seeking knowledge?"
 _TEST_SESSION = "test_prompt_cache_session_001"
 
 
 def _extract_cache_usage(final_state: dict) -> dict:
-    """Extract cache_creation_input_tokens and cache_read_input_tokens from the
-    last AIMessage in final_state['messages'].
+    """Aggregate cache_creation_input_tokens and cache_read_input_tokens across
+    all AIMessages in final_state['messages'].
 
-    Falls back to zeros if no AIMessage with response_metadata is found.
+    Sums across all agent iterations: iteration 1 writes the cache
+    (cache_creation > 0) and subsequent iterations read it (cache_read > 0).
+    Checking only the last AIMessage misses the write on multi-iteration calls.
     """
     messages = final_state.get("messages", [])
-    for msg in reversed(messages):
+    total_creation = 0
+    total_read = 0
+    total_input = 0
+    for msg in messages:
         if isinstance(msg, AIMessage) and hasattr(msg, "response_metadata"):
             usage = msg.response_metadata.get("usage", {})
-            return {
-                "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0) or 0,
-                "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0) or 0,
-                "input_tokens": usage.get("input_tokens", 0) or 0,
-            }
-    return {"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "input_tokens": 0}
+            total_creation += usage.get("cache_creation_input_tokens", 0) or 0
+            total_read += usage.get("cache_read_input_tokens", 0) or 0
+            total_input += usage.get("input_tokens", 0) or 0
+    return {
+        "cache_creation_input_tokens": total_creation,
+        "cache_read_input_tokens": total_read,
+        "input_tokens": total_input,
+    }
 
 
 def test_prompt_cache():
