@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: Sentry Deep Integration
-status: archived
-stopped_at: v1.3 milestone archived — ready for /gsd-new-milestone
-last_updated: "2026-04-28T00:00:00.000Z"
-last_activity: 2026-04-28
+milestone: v1.4
+milestone_name: LLM Input Caching
+status: planning
+stopped_at: ""
+last_updated: "2026-05-03T00:00:00.000Z"
+last_activity: 2026-05-03
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v1.3 milestone archived)
 
 ## Current Position
 
-Phase: 16 (complete)
-Plan: 1/1 plans done
-Status: v1.3 Sentry Deep Integration archived — 4 phases, 8 plans, 22/22 requirements complete
-Last activity: 2026-04-28
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-05-03 — Milestone v1.4 started
 
-Progress bar: `██████████` 100% (4/4 phases complete)
+Progress bar: `░░░░░░░░░░` 0% (0/0 phases complete)
 
 ## Performance Metrics
 

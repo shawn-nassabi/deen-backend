@@ -23,7 +23,26 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 - **v1.2** (2026-04-10) — OpenAI → Claude + HuggingFace migration; 5 phases, 9 plans
 - **v1.3** (2026-04-28) — Sentry Deep Integration; 4 phases, 8 plans, 22 requirements
 
+## Current Milestone: v1.4 LLM Input Caching
+
+**Goal:** Reduce Anthropic API costs by applying Claude prompt caching to all LLM call sites where static content exceeds the 1024-token minimum.
+
+**Target features:**
+- Audit all LLM call sites (ChatAgent, FAIR-RAG sub-graph, module-level classifiers/generators/translators)
+- Apply `cache_control` to system prompts and tool definitions at all eligible Claude API call sites
+- Surface cache hit/miss metrics via existing Sentry/structured logging infrastructure
+
 ## Requirements
+
+### Active
+
+- [ ] Audit all Claude API call sites and classify each by caching eligibility (system prompt, tool defs, retrieved context)
+- [ ] Apply `cache_control: {"type": "ephemeral"}` to system prompts at all eligible LLM call sites
+- [ ] Apply `cache_control` to tool definitions bound to the ChatAgent
+- [ ] Apply `cache_control` to any static retrieved context blocks where applicable
+- [ ] Verify cache hits appear in Anthropic API response usage metadata
+- [ ] Emit cache hit/miss counts in structured logs (correlation_id + extra={} style)
+- [ ] Update Linear ticket DEE-50 with implementation details and measured results
 
 ### Validated
 
@@ -76,10 +95,6 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 - ✓ `core/pipeline_langgraph.py` and `agents/tools/retrieval_tools.py` — zero `print()` calls; node traversal at DEBUG — v1.3
 - ✓ `agents/core/chat_agent.py` — all ~20 `print()` sites replaced with `logger.debug()` / `logger.error(exc_info=True)` — v1.3
 - ✓ `agents/fiqh/fiqh_graph.py` — 10 log calls converted to `extra={}` style; 3 WARNING boundaries at FAIR-RAG silent failure paths; 7 unit tests — v1.3
-
-### Active
-
-*(Next milestone — run /gsd-new-milestone to define v1.4 requirements)*
 
 ### Out of Scope
 
@@ -168,4 +183,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-28 after v1.3 milestone archived*
+*Last updated: 2026-05-03 — Milestone v1.4 LLM Input Caching started*
