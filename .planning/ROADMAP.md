@@ -141,7 +141,12 @@ Plans:
   3. `response.response_metadata["usage"]` (raw Anthropic dict, not LangChain wrapper) is the source for all cache metrics — `usage_metadata` is not used for cache counts
   4. `core/chat_models.py` contains a `make_cached_system_message(text: str) -> SystemMessage` function; every construction of the ChatAgent system prompt calls this helper — no inline `SystemMessage(content=AGENT_SYSTEM_PROMPT)` string patterns remain in `agents/core/chat_agent.py`
   5. The 6 ChatAgent tool definitions are passed to `bind_tools()` with `cache_control: {"type": "ephemeral"}` on the last tool dict only — confirmed by inspecting the outbound Anthropic API payload
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 17-01-PLAN.md — Add make_cached_system_message helper to core/chat_models.py + cache_control on last retrieval tool
+- [ ] 17-02-PLAN.md — Wire helper into agents/core/chat_agent.py (both SystemMessage sites) + cache metrics logging
+- [ ] 17-03-PLAN.md — Create agent_tests/test_prompt_cache.py (two-call cache write/hit verification)
 
 ### Phase 18: Module Prompt Restructuring
 **Goal**: All module-level system prompts across FAIR-RAG and classifier/translation modules are in content-block format with cache_control markers, eliminating the silent ChatPromptTemplate stripping anti-pattern from the codebase
