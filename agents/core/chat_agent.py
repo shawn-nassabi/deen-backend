@@ -32,6 +32,7 @@ from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
 from core.context import correlation_id as correlation_id_ctx
+from core.chat_models import make_cached_system_message
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +164,28 @@ class ChatAgent:
         ]
 
         if state["iterations"] == 1:
-            messages.insert(0, SystemMessage(content=AGENT_SYSTEM_PROMPT))
+            messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
             messages.append(HumanMessage(content=self._build_initial_user_message(state)))
         else:
             messages.append(HumanMessage(content=self._build_iteration_summary(state)))
 
         try:
             response = self.llm.invoke(messages)
+            # Cache metrics: use response_metadata["usage"] (raw Anthropic dict).
+            # Do NOT use the LangChain usage wrapper — it double-counts cached tokens
+            # in streaming paths (GitHub #32818).
+            _usage = response.response_metadata.get("usage", {})
+            _cache_creation = _usage.get("cache_creation_input_tokens", 0) or 0
+            _cache_read = _usage.get("cache_read_input_tokens", 0) or 0
+            logger.debug(
+                "Agent LLM cache metrics",
+                extra={
+                    "correlation_id": correlation_id_ctx.get(),
+                    "cache_hit": _cache_read > 0,
+                    "cache_creation_tokens": _cache_creation,
+                    "cache_read_tokens": _cache_read,
+                },
+            )
             state["messages"].append(response)
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
@@ -241,7 +257,7 @@ class ChatAgent:
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
         generation_messages = [
-            SystemMessage(content=AGENT_SYSTEM_PROMPT),
+            make_cached_system_message(AGENT_SYSTEM_PROMPT),
             HumanMessage(
                 content=f"""User query: {state['user_query']}
 
