@@ -144,9 +144,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 17-01-PLAN.md — Add make_cached_system_message helper to core/chat_models.py + cache_control on last retrieval tool
-- [ ] 17-02-PLAN.md — Wire helper into agents/core/chat_agent.py (both SystemMessage sites) + cache metrics logging
-- [ ] 17-03-PLAN.md — Create agent_tests/test_prompt_cache.py (two-call cache write/hit verification)
+- [x] 17-01-PLAN.md — Add make_cached_system_message helper to core/chat_models.py + cache_control on last retrieval tool
+- [x] 17-02-PLAN.md — Wire helper into agents/core/chat_agent.py (both SystemMessage sites) + cache metrics logging
+- [x] 17-03-PLAN.md — Create agent_tests/test_prompt_cache.py (two-call cache write/hit verification)
 
 ### Phase 18: Module Prompt Restructuring
 **Goal**: All module-level system prompts across FAIR-RAG and classifier/translation modules are in content-block format with cache_control markers, eliminating the silent ChatPromptTemplate stripping anti-pattern from the codebase
@@ -189,6 +189,6 @@ Plans:
 | 14. Route Layer Instrumentation | v1.3 | 3/3 | Complete | 2026-04-26 |
 | 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete | 2026-04-28 |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 1/1 | Complete | 2026-04-28 |
-| 17. ChatAgent Caching Foundation | v1.4 | 0/? | Not started | - |
+| 17. ChatAgent Caching Foundation | v1.4 | 3/3 | Complete | 2026-05-03 |
 | 18. Module Prompt Restructuring | v1.4 | 0/? | Not started | - |
 | 19. Observability and Verification | v1.4 | 0/? | Not started | - |
