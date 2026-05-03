@@ -28,6 +28,7 @@ from agents.tools import (
     retrieve_sunni_documents_tool,
     translate_to_english_tool,
 )
+from agents.tools.retrieval_tools import retrieve_quran_tafsir_tool_cached
 from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
@@ -64,7 +65,17 @@ class ChatAgent:
             temperature=self.config.model.temperature,
             max_tokens=self.config.model.max_tokens,
         )
-        return llm.bind_tools(self.tools)
+        # Build a bind_tools list with the last tool replaced by the cached Anthropic dict.
+        # self.tools keeps callable objects for ToolNode; this list is only for bind_tools.
+        bind_tools_list = [
+            check_if_non_islamic_tool,
+            translate_to_english_tool,
+            enhance_query_tool,
+            retrieve_shia_documents_tool,
+            retrieve_sunni_documents_tool,
+            retrieve_quran_tafsir_tool_cached,
+        ]
+        return llm.bind_tools(bind_tools_list)
 
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(ChatState)
