@@ -171,6 +171,21 @@ class ChatAgent:
 
         try:
             response = self.llm.invoke(messages)
+            # Cache metrics: use response_metadata["usage"] (raw Anthropic dict).
+            # Do NOT use the LangChain usage wrapper — it double-counts cached tokens
+            # in streaming paths (GitHub #32818).
+            _usage = response.response_metadata.get("usage", {})
+            _cache_creation = _usage.get("cache_creation_input_tokens", 0) or 0
+            _cache_read = _usage.get("cache_read_input_tokens", 0) or 0
+            logger.debug(
+                "Agent LLM cache metrics",
+                extra={
+                    "correlation_id": correlation_id_ctx.get(),
+                    "cache_hit": _cache_read > 0,
+                    "cache_creation_tokens": _cache_creation,
+                    "cache_read_tokens": _cache_read,
+                },
+            )
             state["messages"].append(response)
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
