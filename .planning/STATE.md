@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: LLM Input Caching
-status: Phase 17 structurally verified — run `python agent_tests/test_prompt_cache.py` to confirm live cache hits
-stopped_at: Phase 17 verification complete (5/5 criteria verified, live test pending)
-last_updated: "2026-05-03T21:45:00.000Z"
-last_activity: 2026-05-03 — Phase 17 verified (5/5 criteria), awaiting live API test
+status: Phase 17 COMPLETE — cache verified live (4607 write, 6692 read tokens)
+stopped_at: Phase 17 fully verified including live API test
+last_updated: "2026-05-03T22:00:00.000Z"
+last_activity: 2026-05-03 — Phase 17 complete (5/5 criteria + live cache test PASS)
 progress:
   total_phases: 7
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
   completed_plans: 3
 ---
@@ -24,12 +24,12 @@ See: .planning/PROJECT.md (updated 2026-04-28 after v1.3 milestone archived)
 
 ## Current Position
 
-Phase: 17 — chatagent-caching-foundation (verified)
-Plan: 17-03 (all plans done, verification complete)
-Status: Phase 17 structurally verified — live API test pending
-Last activity: 2026-05-03 — Phase 17 verification complete (5/5)
+Phase: 17 — chatagent-caching-foundation (COMPLETE)
+Plan: 17-03 (all plans done, verified)
+Status: Phase 17 complete — live cache test PASSED
+Last activity: 2026-05-03 — Phase 17 PASS: 4607 write, 6692 read tokens
 
-Progress bar: `▓░░░░░░░░░` 0% (0/3 phases complete — Phase 17 awaiting live test confirmation)
+Progress bar: `▓▓▓░░░░░░░` 33% (1/3 phases complete)
 
 ## Performance Metrics
 

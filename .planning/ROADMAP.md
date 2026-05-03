@@ -60,7 +60,7 @@ Full details: `.planning/milestones/v1.3-ROADMAP.md`
 
 ### v1.4 LLM Input Caching (Phases 17-19)
 
-- [ ] **Phase 17: ChatAgent Caching Foundation** - cache_control on tool definitions and system prompt; helper function; verification; per-call metrics logging
+- [x] **Phase 17: ChatAgent Caching Foundation** - cache_control on tool definitions and system prompt; helper function; verification; per-call metrics logging (completed 2026-05-03)
 - [ ] **Phase 18: Module Prompt Restructuring** - refactor all ChatPromptTemplate system-message patterns to content-block format with cache_control markers
 - [ ] **Phase 19: Observability and Verification** - per-session cache efficiency ratio in Sentry; Linear ticket DEE-50 updated with measured results
 
