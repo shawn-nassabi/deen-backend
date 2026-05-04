@@ -185,7 +185,7 @@ class ChatAgent:
             # Cache metrics: use response_metadata["usage"] (raw Anthropic dict).
             # Do NOT use the LangChain usage wrapper — it double-counts cached tokens
             # in streaming paths (GitHub #32818).
-            _usage = response.response_metadata.get("usage", {})
+            _usage = (response.response_metadata or {}).get("usage", {})
             _cache_creation = _usage.get("cache_creation_input_tokens", 0) or 0
             _cache_read = _usage.get("cache_read_input_tokens", 0) or 0
             logger.debug(
