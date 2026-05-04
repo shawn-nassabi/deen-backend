@@ -431,7 +431,7 @@ async def chat_pipeline_streaming_agentic(
                         "correlation_id": correlation_id_ctx.get(),
                         "session_id": session_id,
                     })
-            yield sse_event("error", {"message": str(e)})
+            yield sse_event("error", {"message": "An error occurred. Please try again."})
             _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
