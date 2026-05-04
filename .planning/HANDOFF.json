@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-04T02:38:33Z",
+  "phase": "18",
+  "phase_name": "module-prompt-restructuring",
+  "phase_dir": ".planning/phases/18-module-prompt-restructuring",
+  "plan": 3,
+  "task": "checkpoint",
+  "total_tasks": 3,
+  "status": "awaiting_human_approval",
+  "completed_tasks": [
+    {"id": "18-01", "name": "Replace ChatPromptTemplate with builder functions", "status": "done", "commit": "6e77450"},
+    {"id": "18-02", "name": "Update consumer call sites", "status": "done", "commit": "8754d9b"},
+    {"id": "18-03-t1", "name": "Update test monkeypatches", "status": "done", "commit": "ccea071"}
+  ],
+  "remaining_tasks": [
+    {"id": "18-03-checkpoint", "name": "Human verification checkpoint", "status": "awaiting_approval"}
+  ],
+  "blockers": [
+    {"description": "Plan 18-03 autonomous:false checkpoint requires user to verify success criteria and type 'approved'", "type": "human_action", "workaround": "none"}
+  ],
+  "human_actions_pending": [
+    {"action": "Run 5 verification commands in .continue-here.md and type 'approved'", "context": "Plan 18-03 has an explicit human-verify gate", "blocking": true}
+  ],
+  "decisions": [
+    {"decision": "generator_messages and hikmah_elaboration_messages use plain SystemMessage", "rationale": "Dynamic runtime vars in system body = guaranteed cache miss every call (D-05)", "phase": "18"},
+    {"decision": "Enhancer templates excluded from refactor", "rationale": "Haiku 4.5 requires 4096-token minimum; enhancer ~330 tokens", "phase": "18"},
+    {"decision": "with_redis_history removed from stream_generator.py", "rationale": "Replaced with explicit make_history().messages fetch + direct model.stream()", "phase": "18"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Present verification commands to user; after 'approved', update STATE.md + ROADMAP.md to mark Phase 18 complete",
+  "context_notes": "All 3 plans complete. Phase 18 eliminates the GitHub #26701 cache_control stripping bug. Tests pass (5 pre-existing failures unrelated to Phase 18)."
+}
