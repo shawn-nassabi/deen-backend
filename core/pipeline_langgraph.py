@@ -15,6 +15,7 @@ from agents.core.chat_agent import ChatAgent
 from core import utils
 import logging
 from core.context import correlation_id as correlation_id_ctx
+from core.sentry import record_cache_metrics_breadcrumb
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,37 @@ def sse_event(event_type: str, data: dict) -> str:
     stable and its payload shapes are preserved.
     """
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+def _emit_cache_metrics_breadcrumb(final_state) -> None:
+    """Compute per-turn cache efficiency ratio and emit Sentry breadcrumb.
+
+    Phase 19 (D-05, D-06, D-08, D-09):
+      - Sum across all _agent_node iterations is read from ChatState fields
+        (cache_creation_tokens_total, cache_read_tokens_total). D-07 option b.
+      - Cold-cache (denominator 0) -> 0.0, NOT ZeroDivisionError. Required
+        explicitly by ROADMAP.md Phase 19 success criterion 2.
+      - Helper at core.sentry is a no-op when SENTRY_ENABLED is false (D-09),
+        so this caller can fire unconditionally on every done boundary.
+      - final_state may be None (line 201 path) or a dict missing the new
+        fields (defensive against legacy/test ChatState construction).
+    """
+    if final_state is None or not isinstance(final_state, dict):
+        sum_creation = 0
+        sum_read = 0
+        n_iter = 0
+    else:
+        sum_creation = final_state.get("cache_creation_tokens_total", 0) or 0
+        sum_read = final_state.get("cache_read_tokens_total", 0) or 0
+        n_iter = final_state.get("iterations", 0) or 0
+    total = sum_creation + sum_read
+    ratio = (sum_read / total) if total > 0 else 0.0  # D-06 cold-cache guard
+    record_cache_metrics_breadcrumb(
+        cache_efficiency_ratio=ratio,
+        cache_read_tokens=sum_read,
+        cache_creation_tokens=sum_creation,
+        iterations=n_iter,
+    )
 
 
 async def chat_pipeline_streaming_agentic(
@@ -198,6 +230,7 @@ async def chat_pipeline_streaming_agentic(
 
             if final_state is None:
                 yield sse_event("error", {"message": "No response generated."})
+                _emit_cache_metrics_breadcrumb(final_state)
                 yield sse_event("done", {})
                 return
 
@@ -216,6 +249,7 @@ async def chat_pipeline_streaming_agentic(
                     assistant_text=assistant_text,
                 )
                 history_written = True
+                _emit_cache_metrics_breadcrumb(final_state)
                 yield sse_event("done", {})
                 return
 
@@ -375,6 +409,7 @@ async def chat_pipeline_streaming_agentic(
                     quran_json = utils.format_quran_references_as_json(quran_docs)
                     yield sse_event("quran_references", {"references": quran_json})
 
+            _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
         except Exception as e:
@@ -397,6 +432,7 @@ async def chat_pipeline_streaming_agentic(
                         "session_id": session_id,
                     })
             yield sse_event("error", {"message": str(e)})
+            _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
