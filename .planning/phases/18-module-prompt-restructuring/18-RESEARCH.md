@@ -741,7 +741,7 @@ Apply in this sequence to minimize time with broken intermediate state:
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **`primer_generation_prompt_template` — which model does `primers_model` use?**
    - What we know: `primers_model = get_enhancer_model()` (line 34 of `primer_service.py`) which returns `ChatAnthropic(model=SMALL_LLM)` — Haiku 4.5.
