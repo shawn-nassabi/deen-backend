@@ -2,6 +2,53 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v1.4 — LLM Input Caching
+
+**Shipped:** 2026-05-04
+**Phases:** 3 | **Plans:** 9 | **Commits:** 62 (2026-05-03 → 2026-05-04)
+
+### What Was Built
+
+- `make_cached_system_message()` helper + `retrieve_quran_tafsir_tool_cached` dict — two Anthropic content-block caching primitives
+- Cached prefix wired into `agents/core/chat_agent.py` — tools + system prompt (~5,149 tokens) caches on every `/chat/stream/agentic` call
+- All 10 `ChatPromptTemplate` objects replaced with builder functions across 6 `modules/fiqh/` files and `core/prompt_templates.py`
+- `record_cache_metrics_breadcrumb` in Sentry; `cache_efficiency_ratio` emitted at all 4 SSE done sites; 9 hermetic tests pass
+- `DEE-50-POST-DEPLOY-CHECKLIST.md` for OBS-02 post-deploy observation procedure
+
+### What Worked
+
+- **Phased dependencies enforced the right order:** Phase 17 helper → Phase 18 call sites → Phase 19 metrics. No circular work or rework.
+- **SUMMARY.md anti-pattern documentation paid off:** The `ChatPromptTemplate` stripping issue (GitHub #26701) was caught during Phase 17 research, not at runtime — Phase 18 refactored all sites upfront.
+- **Hermetic tests via FakeAgent pattern:** Patching `pipeline_langgraph.ChatAgent` directly allowed 5 pipeline-level tests with zero live LLM calls — fast, stable, both module namespaces patched (T-19-10).
+- **Code review pass before ship:** CR-01 (SSE exception leak) was caught and fixed before deploy — existing issue, not introduced by this milestone.
+
+### What Was Inefficient
+
+- **Wave 3 worktree conflict:** Worktree was based on old ancestor (PR #82), not the feature branch tip — executor's first commit re-applied Phase 17/18 changes, causing merge conflicts on 5 files. Added ~30 min to Phase 19. Prevention: check `git log --oneline HEAD.."$WT_BRANCH"` before merging any worktree.
+- **`_generate_fiqh_response_node` missed in 18-02:** The plan didn't scope this node explicitly; it was caught during Phase 18 verification and hotfixed. Adds one unplanned commit. Prevention: grep for all SystemMessage construction sites before writing plan.
+- **`@tool(extras=...)` dead end:** Plan 17-01 specified an API that doesn't exist in langchain-core==0.3.84. Required quick pivot to `convert_to_anthropic_tool()` + dict mutation. Caught at execution, not research.
+
+### Patterns Established
+
+- **Content-block format is now the only system message pattern** — `make_cached_system_message()` is the canonical path; `ChatPromptTemplate.from_messages` is an anti-pattern banned from the codebase.
+- **Cache metrics from `response_metadata["usage"]`, never `usage_metadata`** — documented in CLAUDE.md constraints and enforced by grep test.
+- **`state.get(key, 0) + value` accumulation pattern** — defensive against TypedDict absent keys when states are constructed in tests; safer than `+=` on TypedDict fields.
+- **Worktree merge safety check** — verify `git log --oneline HEAD.."$WT_BRANCH"` contains only expected commits before merging.
+
+### Key Lessons
+
+- The 2,048-token caching minimum (Sonnet) vs 4,096-token minimum (Haiku) is a first-class constraint for planning eligible call sites — check token counts before writing caching plans, not during execution.
+- Sentry breadcrumb no-ops (`if not SENTRY_ENABLED: return`) must be the first line of every new Sentry helper — ensures local dev and test environments stay clean.
+- OBS-02-style "measure in production" requirements need a written checklist artifact (DEE-50-POST-DEPLOY-CHECKLIST.md) at plan time, not execution time — ensures the human action is documented and not forgotten.
+
+### Cost Observations
+
+- 2-day milestone with 3 phases, 9 plans, 62 commits
+- No model upgrades or dependency version bumps required
+- Single branch (`feature/release-llm-cache-cost-reduction`) for full milestone
+
+---
+
 ## Milestone: v1.0 — Fiqh Agentic RAG MVP
 
 **Shipped:** 2026-03-25

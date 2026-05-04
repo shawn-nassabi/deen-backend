@@ -6,7 +6,7 @@
 - ✅ **v1.1 Supabase Migration** — Phases 5-7 (shipped 2026-04-07)
 - ✅ **v1.2 Claude Migration** — Phases 8-12 (shipped 2026-04-10)
 - ✅ **v1.3 Sentry Deep Integration** — Phases 13-16 (shipped 2026-04-28)
-- 🔄 **v1.4 LLM Input Caching** — Phases 17-19 (in progress)
+- ✅ **v1.4 LLM Input Caching** — Phases 17-19 (shipped 2026-05-04)
 
 ## Phases
 
@@ -58,11 +58,16 @@ Full details: `.planning/milestones/v1.3-ROADMAP.md`
 
 </details>
 
-### v1.4 LLM Input Caching (Phases 17-19)
+<details>
+<summary>✅ v1.4 LLM Input Caching (Phases 17-19) — SHIPPED 2026-05-04</summary>
 
 - [x] **Phase 17: ChatAgent Caching Foundation** - cache_control on tool definitions and system prompt; helper function; verification; per-call metrics logging (completed 2026-05-03)
 - [x] **Phase 18: Module Prompt Restructuring** - refactor all ChatPromptTemplate system-message patterns to content-block format with cache_control markers (completed 2026-05-03)
 - [x] **Phase 19: Observability and Verification** - per-session cache efficiency ratio in Sentry; Linear ticket DEE-50 updated with measured results (completed 2026-05-04, OBS-02 pending post-deploy)
+
+Full details: `.planning/milestones/v1.4-ROADMAP.md`
+
+</details>
 
 ## Phase Details
 
@@ -212,5 +217,5 @@ Plans:
 | 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete | 2026-04-28 |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 1/1 | Complete | 2026-04-28 |
 | 17. ChatAgent Caching Foundation | v1.4 | 3/3 | Complete | 2026-05-03 |
-| 18. Module Prompt Restructuring | v1.4 | 0/3 | Not started | - |
-| 19. Observability and Verification | v1.4 | 0/3 | Planned | - |
+| 18. Module Prompt Restructuring | v1.4 | 3/3 | Complete | 2026-05-03 |
+| 19. Observability and Verification | v1.4 | 3/3 | Complete | 2026-05-04 |
