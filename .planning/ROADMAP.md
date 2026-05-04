@@ -157,7 +157,18 @@ Plans:
   2. Every refactored system message constructs via `make_cached_system_message()` from `core/chat_models.py` — no inline `[{"type": "text", "text": ..., "cache_control": ...}]` dict literals appear at call sites
   3. `modules/enhancement/enhancer.py` is untouched — a code comment explains why caching is explicitly excluded (Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens)
   4. A smoke test of the `/chat/stream/agentic` endpoint after the refactor returns a valid response — zero behavioral regression
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+
+**Wave 1** *(parallel — no dependencies between plans)*
+- [ ] 18-01-PLAN.md — Refactor core/prompt_templates.py (replace 6 ChatPromptTemplate objects with builder functions, add exclusion comments on 2 enhancer templates) + refactor all 6 modules/fiqh/ files (replace _prompt with _build_messages)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 18-02-PLAN.md — Update 6 consumer files: modules/classification/classifier.py, modules/translation/translator.py, modules/generation/generator.py (legacy), modules/generation/stream_generator.py (remove with_redis_history), core/pipeline_langgraph.py (fiqh import + non-fiqh generation path), services/primer_service.py (both call sites)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 18-03-PLAN.md — Update test monkeypatch in tests/test_agentic_streaming_pipeline.py + smoke test checkpoint
 
 ### Phase 19: Observability and Verification
 **Goal**: Cache efficiency is visible in Sentry per session, and the Linear ticket DEE-50 documents confirmed hit rates and implementation details after live deployment
@@ -190,5 +201,5 @@ Plans:
 | 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete | 2026-04-28 |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 1/1 | Complete | 2026-04-28 |
 | 17. ChatAgent Caching Foundation | v1.4 | 3/3 | Complete | 2026-05-03 |
-| 18. Module Prompt Restructuring | v1.4 | 0/? | Not started | - |
+| 18. Module Prompt Restructuring | v1.4 | 0/3 | Not started | - |
 | 19. Observability and Verification | v1.4 | 0/? | Not started | - |
