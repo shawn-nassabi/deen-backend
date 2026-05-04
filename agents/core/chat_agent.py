@@ -198,6 +198,10 @@ class ChatAgent:
                 },
             )
             state["messages"].append(response)
+            # Phase 19 (D-05, D-07 option b): accumulate per-turn cache tokens.
+            # Sum across all iterations; ratio computed once at SSE done in pipeline_langgraph.
+            state["cache_creation_tokens_total"] = state.get("cache_creation_tokens_total", 0) + _cache_creation
+            state["cache_read_tokens_total"] = state.get("cache_read_tokens_total", 0) + _cache_read
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
         except Exception as exc:
