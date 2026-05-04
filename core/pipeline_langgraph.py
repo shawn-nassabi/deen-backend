@@ -222,7 +222,7 @@ async def chat_pipeline_streaming_agentic(
             # --- Fiqh FAIR-RAG streaming path ---
             if final_state.get("fiqh_category") in VALID_FIQH_CATEGORIES:
                 from modules.fiqh.generator import (
-                    _prompt as fiqh_prompt,
+                    _build_messages as fiqh_build_messages,
                     _format_evidence,
                     _build_references_section,
                     INSUFFICIENT_WARNING,
@@ -265,12 +265,12 @@ async def chat_pipeline_streaming_agentic(
                 else:
                     # Stream fiqh answer token-by-token using fiqh-specific prompt (D-06)
                     model = chat_models.get_generator_model()
-                    chain = fiqh_prompt | model
+                    fiqh_messages = fiqh_build_messages(
+                        query=user_query,
+                        evidence=_format_evidence(fiqh_docs),
+                    )
                     response_tokens = []
-                    for chunk in chain.stream({
-                        "query": user_query,
-                        "evidence": _format_evidence(fiqh_docs),
-                    }):
+                    for chunk in model.stream(fiqh_messages):
                         token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                         if token:
                             response_tokens.append(token)
@@ -329,19 +329,16 @@ async def chat_pipeline_streaming_agentic(
 
                         references = utils.compact_format_references(all_docs)
                         chat_model = chat_models.get_generator_model()
-                        prompt = prompt_templates.generator_prompt_template
-                        chain = prompt | chat_model
                         history_messages = make_history(runtime_session_id).messages
+                        messages = prompt_templates.generator_messages(
+                            query=user_query,
+                            references=references,
+                            target_language=target_language,
+                            chat_history=history_messages,
+                        )
 
                         response_tokens = []
-                        for chunk in chain.stream(
-                            {
-                                "target_language": target_language,
-                                "query": user_query,
-                                "references": references,
-                                "chat_history": history_messages,
-                            },
-                        ):
+                        for chunk in chat_model.stream(messages):
                             token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                             if token:
                                 response_tokens.append(token)
