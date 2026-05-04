@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: LLM Input Caching
-status: Phase 18 context gathered — ready for planning
-stopped_at: Phase 18 context gathered
-last_updated: "2026-05-03T23:00:00.000Z"
-last_activity: 2026-05-03 — Phase 18 discussion complete, 18-CONTEXT.md written
+status: Phase 18 complete — ready for /gsd-discuss-phase 19 or /gsd-plan-phase 19
+stopped_at: Phase 18 verified and closed (2026-05-03)
+last_updated: "2026-05-03T00:00:00.000Z"
+last_activity: 2026-05-03 — Phase 18 complete (3/3 plans, verified, one missed call site hotfix)
 progress:
-  total_phases: 7
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_phases: 3
+  completed_phases: 2
+  total_plans: 9
+  completed_plans: 9
+  percent: 67
 ---
 
 # Project State
@@ -20,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-28 after v1.3 milestone archived)
 
 **Core value:** Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
-**Current focus:** v1.4 LLM Input Caching — roadmap defined, ready to plan Phase 17
+**Current focus:** v1.4 LLM Input Caching — Phase 18 complete, Phase 19 (Observability and Verification) is next
 
 ## Current Position
 
-Phase: 18 — module-prompt-restructuring (CONTEXT READY)
-Plan: None yet (planning next)
-Status: Phase 18 context gathered — ready for /gsd-plan-phase 18
-Last activity: 2026-05-03 — Phase 18 discussion complete, 4 areas decided
+Phase: 19 — observability-and-verification (CONTEXT NOT YET GATHERED)
+Plan: None yet (discuss or plan next)
+Status: Phase 18 complete — ready for Phase 19
+Last activity: 2026-05-03 — Phase 18 verified; hotfix committed for missed _prompt→_build_messages call site in _generate_fiqh_response_node
 
-Progress bar: `▓▓▓░░░░░░░` 33% (1/3 phases complete)
+Progress bar: `▓▓▓▓▓▓░░░░` 67% (2/3 phases complete)
 
 ## Performance Metrics
 
 | Metric | v1.0 | v1.1 | v1.2 | v1.3 | v1.4 |
 |--------|------|------|------|------|------|
 | Phases | 4 | 3 | 5 | 4 | 3 |
-| Plans | 12 | 6 | 9 | 8 | TBD |
+| Plans | 12 | 6 | 9 | 8 | 9 |
 | Requirements | 39 | 8 | 23 | 22 | 8 |
 
 ## Accumulated Context
@@ -47,11 +48,11 @@ All decisions logged in PROJECT.md Key Decisions table.
 
 ### v1.4 Phase Structure
 
-| Phase | Focus | Requirements | Depends on |
-|-------|-------|--------------|------------|
-| 17 | ChatAgent Caching Foundation | CACHE-01, CACHE-02, CACHE-03, CACHE-04, STRUCT-01 | Nothing |
-| 18 | Module Prompt Restructuring | STRUCT-02 | Phase 17 (make_cached_system_message helper) |
-| 19 | Observability and Verification | OBS-01, OBS-02 | Phase 17 (cache metrics flowing) |
+| Phase | Focus | Requirements | Status |
+|-------|-------|--------------|--------|
+| 17 | ChatAgent Caching Foundation | CACHE-01, CACHE-02, CACHE-03, CACHE-04, STRUCT-01 | Complete |
+| 18 | Module Prompt Restructuring | STRUCT-02 | Complete |
+| 19 | Observability and Verification | OBS-01, OBS-02 | Next |
 
 ### Key Constraints for v1.4
 
@@ -62,6 +63,14 @@ All decisions logged in PROJECT.md Key Decisions table.
 - Use `response.response_metadata["usage"]` (raw Anthropic dict) for cache metrics, not `response.usage_metadata` — LangChain wrapper double-counts cached tokens on streaming calls (GitHub #32818)
 - `AnthropicPromptCachingMiddleware` does not exist in `langchain-anthropic==0.3.22` — do not attempt to import it
 - `ChatPromptTemplate.format_messages()` silently strips `cache_control` — all system prompts must use `SystemMessage(content=[...])` content-block lists (GitHub #26701)
+
+### Phase 18 Decisions (for Phase 19 context)
+
+- `generator_messages` and `hikmah_elaboration_messages` use plain `SystemMessage` (not `make_cached_system_message`) — their system bodies contain runtime variables, so caching would be a guaranteed miss every call (D-05)
+- `enhancer` templates excluded — Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens
+- `with_redis_history` removed from `stream_generator.py` — replaced with explicit `make_history(session_id).messages` fetch + direct `model.stream()`
+- `pipeline_langgraph.py` imports `_build_messages` as `fiqh_build_messages` (not the old `_prompt` alias)
+- `_generate_fiqh_response_node` in `chat_agent.py` also needed updating (missed in 18-02, hotfixed after verification)
 
 ### Pending Todos
 
@@ -82,6 +91,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-03T20:29:45.908Z
-Stopped at: Phase 18 context gathered
-Next action: /gsd-plan-phase 18
+Last session: 2026-05-03
+Stopped at: Phase 18 verified and closed
+Next action: /gsd-discuss-phase 19 (or /gsd-plan-phase 19 if context is clear)

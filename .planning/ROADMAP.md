@@ -61,7 +61,7 @@ Full details: `.planning/milestones/v1.3-ROADMAP.md`
 ### v1.4 LLM Input Caching (Phases 17-19)
 
 - [x] **Phase 17: ChatAgent Caching Foundation** - cache_control on tool definitions and system prompt; helper function; verification; per-call metrics logging (completed 2026-05-03)
-- [ ] **Phase 18: Module Prompt Restructuring** - refactor all ChatPromptTemplate system-message patterns to content-block format with cache_control markers
+- [x] **Phase 18: Module Prompt Restructuring** - refactor all ChatPromptTemplate system-message patterns to content-block format with cache_control markers (completed 2026-05-03)
 - [ ] **Phase 19: Observability and Verification** - per-session cache efficiency ratio in Sentry; Linear ticket DEE-50 updated with measured results
 
 ## Phase Details
@@ -162,13 +162,13 @@ Plans:
 Plans:
 
 **Wave 1** *(parallel — no dependencies between plans)*
-- [ ] 18-01-PLAN.md — Refactor core/prompt_templates.py (replace 6 ChatPromptTemplate objects with builder functions, add exclusion comments on 2 enhancer templates) + refactor all 6 modules/fiqh/ files (replace _prompt with _build_messages)
+- [x] 18-01-PLAN.md — Refactor core/prompt_templates.py (replace 6 ChatPromptTemplate objects with builder functions, add exclusion comments on 2 enhancer templates) + refactor all 6 modules/fiqh/ files (replace _prompt with _build_messages)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 18-02-PLAN.md — Update 6 consumer files: modules/classification/classifier.py, modules/translation/translator.py, modules/generation/generator.py (legacy), modules/generation/stream_generator.py (remove with_redis_history), core/pipeline_langgraph.py (fiqh import + non-fiqh generation path), services/primer_service.py (both call sites)
+- [x] 18-02-PLAN.md — Update 6 consumer files: modules/classification/classifier.py, modules/translation/translator.py, modules/generation/generator.py (legacy), modules/generation/stream_generator.py (remove with_redis_history), core/pipeline_langgraph.py (fiqh import + non-fiqh generation path), services/primer_service.py (both call sites)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 18-03-PLAN.md — Update test monkeypatch in tests/test_agentic_streaming_pipeline.py + smoke test checkpoint
+- [x] 18-03-PLAN.md — Update test monkeypatch in tests/test_agentic_streaming_pipeline.py + smoke test checkpoint
 
 ### Phase 19: Observability and Verification
 **Goal**: Cache efficiency is visible in Sentry per session, and the Linear ticket DEE-50 documents confirmed hit rates and implementation details after live deployment
