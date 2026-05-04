@@ -379,7 +379,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         """
         logger.debug("Generating fiqh answer (non-streaming)", extra={"correlation_id": correlation_id_ctx.get()})
         from modules.fiqh.generator import (
-            _prompt,
+            _build_messages,
             _format_evidence,
             _build_references_section,
             INSUFFICIENT_WARNING,
@@ -401,7 +401,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
         try:
             model = get_generator_model()
-            response = model.invoke(_prompt.format_messages(
+            response = model.invoke(_build_messages(
                 query=state["user_query"],
                 evidence=_format_evidence(docs),
             ))
