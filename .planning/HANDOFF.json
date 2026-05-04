@@ -1,33 +1,39 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-04T02:38:33Z",
-  "phase": "18",
-  "phase_name": "module-prompt-restructuring",
-  "phase_dir": ".planning/phases/18-module-prompt-restructuring",
+  "timestamp": "2026-05-04T00:00:00.000Z",
+  "phase": "19",
+  "phase_name": "observability-and-verification",
+  "phase_dir": ".planning/phases/19-observability-and-verification",
   "plan": 3,
-  "task": "checkpoint",
+  "task": 3,
   "total_tasks": 3,
-  "status": "awaiting_human_approval",
+  "status": "paused",
   "completed_tasks": [
-    {"id": "18-01", "name": "Replace ChatPromptTemplate with builder functions", "status": "done", "commit": "6e77450"},
-    {"id": "18-02", "name": "Update consumer call sites", "status": "done", "commit": "8754d9b"},
-    {"id": "18-03-t1", "name": "Update test monkeypatches", "status": "done", "commit": "ccea071"}
+    {"id": "19-01-task-1", "name": "Add record_cache_metrics_breadcrumb to core/sentry.py", "status": "done", "commit": "eddad24"},
+    {"id": "19-01-task-2", "name": "Add ChatState accumulator fields", "status": "done", "commit": "3d69a2d"},
+    {"id": "19-02-task-1", "name": "Accumulate cache tokens in _agent_node", "status": "done", "commit": "064bd75"},
+    {"id": "19-02-task-2", "name": "Compute ratio + fire breadcrumb at all 4 SSE done sites", "status": "done", "commit": "2c9e364"},
+    {"id": "19-03-task-1", "name": "Hermetic unit tests for OBS-01", "status": "done", "commit": "1d73ff4"},
+    {"id": "19-03-task-2", "name": "DEE-50-POST-DEPLOY-CHECKLIST.md", "status": "done", "commit": "90b716c"}
   ],
   "remaining_tasks": [
-    {"id": "18-03-checkpoint", "name": "Human verification checkpoint", "status": "awaiting_approval"}
+    {"id": "19-03-task-3", "name": "OBS-02: post-deploy Linear comment with measured hit rate", "status": "pending_human_action", "resume_signal": "obs-02-closed"}
   ],
-  "blockers": [
-    {"description": "Plan 18-03 autonomous:false checkpoint requires user to verify success criteria and type 'approved'", "type": "human_action", "workaround": "none"}
-  ],
+  "blockers": [],
   "human_actions_pending": [
-    {"action": "Run 5 verification commands in .continue-here.md and type 'approved'", "context": "Plan 18-03 has an explicit human-verify gate", "blocking": true}
+    {
+      "action": "After next production deploy: send two identical /chat/stream/agentic requests within 5 min, observe Sentry breadcrumbs, post Linear comment on DEE-50 per DEE-50-POST-DEPLOY-CHECKLIST.md",
+      "context": "OBS-02 requires production traffic and a Sentry screenshot — cannot be automated per D-12",
+      "blocking": false
+    }
   ],
   "decisions": [
-    {"decision": "generator_messages and hikmah_elaboration_messages use plain SystemMessage", "rationale": "Dynamic runtime vars in system body = guaranteed cache miss every call (D-05)", "phase": "18"},
-    {"decision": "Enhancer templates excluded from refactor", "rationale": "Haiku 4.5 requires 4096-token minimum; enhancer ~330 tokens", "phase": "18"},
-    {"decision": "with_redis_history removed from stream_generator.py", "rationale": "Replaced with explicit make_history().messages fetch + direct model.stream()", "phase": "18"}
+    {"decision": "D-07 option b: ChatState fields over ContextVar", "rationale": "Matches existing final_state.get(...) pattern; less invasive", "phase": "19"},
+    {"decision": "state.get(key, 0) + value over +=", "rationale": "Defensive against TypedDict absent keys in test-constructed states", "phase": "19"},
+    {"decision": "Non-streaming chat_pipeline_agentic left without breadcrumb", "rationale": "OBS-01 satisfied via streaming path (production path); deferred to future plan", "phase": "19"},
+    {"decision": "Wave 3 worktree had rogue commit bringing Phase 17/18 changes", "rationale": "Worktree base was old ancestor — cherry-picked only the 3 clean commits (test, checklist, SUMMARY)", "phase": "19"}
   ],
   "uncommitted_files": [],
-  "next_action": "Present verification commands to user; after 'approved', update STATE.md + ROADMAP.md to mark Phase 18 complete",
-  "context_notes": "All 3 plans complete. Phase 18 eliminates the GitHub #26701 cache_control stripping bug. Tests pass (5 pre-existing failures unrelated to Phase 18)."
+  "next_action": "Deploy feature/release-llm-cache-cost-reduction to production, then follow DEE-50-POST-DEPLOY-CHECKLIST.md to close OBS-02. After: reply obs-02-closed to complete Phase 19.",
+  "context_notes": "Phase 19 fully executed. All 12 v1.4 plans done. Code review found CR-01 (pre-existing SSE exception leak) — run /gsd-code-review-fix 19 before shipping. v1.4 milestone is complete pending OBS-02 post-deploy verification."
 }
