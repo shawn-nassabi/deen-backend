@@ -178,7 +178,18 @@ Plans:
   1. A completed chat session produces a Sentry breadcrumb containing `cache_efficiency_ratio` (float 0.0–1.0) computed as `cache_read_tokens / (cache_read_tokens + cache_creation_tokens)` — visible in the Sentry issue detail breadcrumb trail
   2. A session with a cold cache (first-ever request or after TTL expiry) produces `cache_efficiency_ratio: 0.0`; a warm-cache session produces a ratio > 0.0
   3. Linear ticket DEE-50 contains: list of eligible call sites, the approach taken (content-block format + bind_tools injection), and measured cache hit rates from at least one production deployment
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+
+**Wave 1**
+- [ ] 19-01-PLAN.md — Add record_cache_metrics_breadcrumb helper to core/sentry.py + cache_*_tokens_total ChatState fields (foundation, purely additive)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 19-02-PLAN.md — Wire _agent_node accumulation in agents/core/chat_agent.py + ratio computation + breadcrumb emission at all 4 SSE done sites in core/pipeline_langgraph.py
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 19-03-PLAN.md — Hermetic unit-seam tests in tests/test_cache_metrics_breadcrumb.py + DEE-50 post-deploy checklist artifact + OBS-02 manual closure checkpoint (D-12)
 
 ## Progress
 
@@ -202,4 +213,4 @@ Plans:
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 1/1 | Complete | 2026-04-28 |
 | 17. ChatAgent Caching Foundation | v1.4 | 3/3 | Complete | 2026-05-03 |
 | 18. Module Prompt Restructuring | v1.4 | 0/3 | Not started | - |
-| 19. Observability and Verification | v1.4 | 0/? | Not started | - |
+| 19. Observability and Verification | v1.4 | 0/3 | Planned | - |
