@@ -86,6 +86,11 @@ def _emit_cache_metrics_breadcrumb(final_state) -> None:
         so this caller can fire unconditionally on every done boundary.
       - final_state may be None (line 201 path) or a dict missing the new
         fields (defensive against legacy/test ChatState construction).
+
+    NOTE: Only _agent_node LLM calls are counted. Generator nodes
+    (_generate_response_node, _generate_fiqh_response_node) are excluded by
+    design because they run outside the iterative tool-calling loop where
+    prompt cache warm-up occurs.
     """
     if final_state is None or not isinstance(final_state, dict):
         sum_creation = 0
