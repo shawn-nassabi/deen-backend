@@ -355,3 +355,52 @@ def test_emit_helper_handles_none_final_state(monkeypatch):
     assert call["cache_efficiency_ratio"] == 0.0
     assert call["cache_read_tokens"] == 0
     assert call["cache_creation_tokens"] == 0
+
+
+def test_breadcrumb_fires_on_fiqh_streaming_path(monkeypatch):
+    """WR-03: breadcrumb must fire when the fiqh FAIR-RAG streaming path is taken.
+
+    Drives the pipeline with a final_state whose fiqh_category is a member of
+    VALID_FIQH_CATEGORIES and empty fiqh_filtered_docs (exercises the no-docs
+    fallback branch without any LLM call).  A regression that inserts a return
+    before _emit_cache_metrics_breadcrumb inside the fiqh block would cause the
+    breadcrumb count assertion to fail.
+    """
+    final_state = {
+        "runtime_session_id": "test-19-fiqh",
+        "early_exit_message": None,
+        "retrieved_docs": [],
+        "quran_docs": [],
+        "errors": [],
+        # Trigger the fiqh streaming path
+        "fiqh_category": "VALID_OBVIOUS",
+        "fiqh_filtered_docs": [],   # empty docs -> fallback branch, no LLM call needed
+        "fiqh_sea_result": None,
+        "fiqh_status_events": [],
+        "final_response": None,
+        "cache_creation_tokens_total": 100,
+        "cache_read_tokens_total": 400,
+        "iterations": 2,
+        "messages": [],
+    }
+    captured = _capture_breadcrumb(monkeypatch)
+    monkeypatch.setattr(
+        "services.chat_persistence_service.append_turn_to_runtime_history",
+        lambda **kwargs: None,
+    )
+    output = _drive_pipeline(
+        final_state,
+        monkeypatch,
+        user_query="Is it permissible to pray with shoes on?",
+        session_id="test-19-fiqh",
+    )
+
+    assert len(captured) >= 1, "breadcrumb must fire on fiqh streaming path (WR-03)"
+    last = captured[-1]
+    assert last["cache_creation_tokens"] == 100
+    assert last["cache_read_tokens"] == 400
+    assert last["iterations"] == 2
+    # ratio = 400 / (400 + 100) = 0.8
+    assert abs(last["cache_efficiency_ratio"] - 0.8) < 1e-9
+    # Verify the fiqh fallback message was emitted to the SSE stream
+    assert "sistani.org" in output
