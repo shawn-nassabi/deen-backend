@@ -1,4 +1,6 @@
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.prompts import ChatPromptTemplate  # Only for excluded enhancer templates
+from langchain_core.messages import SystemMessage, HumanMessage
+from core.chat_models import make_cached_system_message
 
 
 # Promt templates for user response generation
@@ -57,11 +59,22 @@ Use references only when relevant; treat them as your own knowledge, not as 'ref
 
 generatorUserTemplate = "User Query: {query}"
 
-generator_prompt_template = ChatPromptTemplate.from_messages([
-  ("system", generatorSystemTemplate), 
-  MessagesPlaceholder("chat_history"),
-  ("human", generatorUserTemplate)
-])
+def generator_messages(
+    query: str,
+    references: str,
+    target_language: str = "english",
+    chat_history: list | None = None,
+) -> list:
+    if chat_history is None:
+        chat_history = []
+    return [
+        SystemMessage(content=generatorSystemTemplate.format(
+            target_language=target_language,
+            references=references,
+        )),
+        *chat_history,
+        HumanMessage(content=generatorUserTemplate.format(query=query)),
+    ]
 
 
 # Promt templates for query enhancer
@@ -101,6 +114,9 @@ Please enhance the query. Please don't make the enhanced query much longer than 
 """
 
 
+# NOT refactored to make_cached_system_message — SMALL_LLM (Haiku 4.5) requires
+# 4096-token minimum; enhancer system prompt is ~330 tokens (guaranteed cost
+# increase with zero cache hits if cache_control were applied).
 enhancer_prompt_template = ChatPromptTemplate.from_messages(
     [
       ("system", enhancerSystemTemplate),
@@ -132,6 +148,7 @@ Lesson Summary: {lesson_summary}
 """
 
 
+# NOT refactored — same reason as enhancer_prompt_template above.
 elaboration_enhancer_prompt_template = ChatPromptTemplate.from_messages(
     [("system", enhancerSystemTemplate), ("user", elaborationEnhancerUserTemplate)]
 )
@@ -183,8 +200,14 @@ fiqhClassifierUserTemplate = """Conversation so far:
                     Decide relevance *in context*.
                     """
 
-fiqh_classifier_system_prompt = ChatPromptTemplate.from_messages(
-                [("system", fiqhClassifierSystemTemplate), ("user", fiqhClassifierUserTemplate)])
+def fiqh_classifier_messages(query: str, chatContext: str) -> list:
+    return [
+        make_cached_system_message(fiqhClassifierSystemTemplate),
+        HumanMessage(content=fiqhClassifierUserTemplate.format(
+            chatContext=chatContext,
+            query=query,
+        )),
+    ]
 
 nonIslamicClassifierSystemTemplate = """
 Your task is to determine whether the given user query is irrelevant or inappropriate for an Islamic educational chatbot focused on Twelver Shia Islam.\n
@@ -217,9 +240,14 @@ nonIslamicClassiferUserTemplate = """Conversation so far:
                     Decide relevance *in context*.
                     """
 
-nonislamic_classifer_prompt_template = ChatPromptTemplate.from_messages(
-                [("system", nonIslamicClassifierSystemTemplate), ("user", nonIslamicClassiferUserTemplate)]
-)
+def nonislamic_classifier_messages(query: str, chatContext: str) -> list:
+    return [
+        make_cached_system_message(nonIslamicClassifierSystemTemplate),
+        HumanMessage(content=nonIslamicClassiferUserTemplate.format(
+            chatContext=chatContext,
+            query=query,
+        )),
+    ]
 
 # Promt templates for translation
 
@@ -231,8 +259,14 @@ translationSystemTemplate = """You are a precise, faithful translator.
 
 translationUserTemplate = "Source language: {source_language}\n\nText:\n{text}"
 
-translation_prompt_template = ChatPromptTemplate.from_messages(
-  [("system", translationSystemTemplate), ("user", translationUserTemplate)])
+def translation_messages(source_language: str, text: str) -> list:
+    return [
+        make_cached_system_message(translationSystemTemplate),
+        HumanMessage(content=translationUserTemplate.format(
+            source_language=source_language,
+            text=text,
+        )),
+    ]
 
 
 # Promt templates for hikmah elaboration
@@ -321,9 +355,26 @@ Here are the list of references that you can choose to incorporate in your short
 hikmahElaborationUserTemplate = """Could you please elaborate on the following text: {selected_text}
 """
 
-hikmah_elaboration_prompt_template = ChatPromptTemplate.from_messages([
-  ("system", hikmahElaborationSystemTemplate),
-  ("user", hikmahElaborationUserTemplate)])
+def hikmah_elaboration_messages(
+    selected_text: str,
+    context_text: str,
+    hikmah_tree_name: str,
+    lesson_name: str,
+    lesson_summary: str,
+    references: str,
+) -> list:
+    return [
+        SystemMessage(content=hikmahElaborationSystemTemplate.format(
+            hikmah_tree_name=hikmah_tree_name,
+            lesson_name=lesson_name,
+            lesson_summary=lesson_summary,
+            context_text=context_text,
+            references=references,
+        )),
+        HumanMessage(content=hikmahElaborationUserTemplate.format(
+            selected_text=selected_text,
+        )),
+    ]
 
 
 # Prompt templates for personalized lesson primers
@@ -386,7 +437,24 @@ If the user's notes aren't relevant to THIS lesson's specific concepts, return a
 Each primer should clarify a concept from THIS lesson that the user needs to understand to make the lesson easier to follow.
 """
 
-primer_generation_prompt_template = ChatPromptTemplate.from_messages([
-  ("system", primerGenerationSystemTemplate),
-  ("user", primerGenerationUserTemplate)
-])
+def primer_generation_messages(
+    lesson_title: str,
+    lesson_content: str,
+    baseline_bullets: str,
+    user_learning_notes: str,
+    user_interest_notes: str,
+    user_knowledge_notes: str,
+    user_preference_notes: str,
+) -> list:
+    return [
+        make_cached_system_message(primerGenerationSystemTemplate),
+        HumanMessage(content=primerGenerationUserTemplate.format(
+            lesson_title=lesson_title,
+            lesson_content=lesson_content,
+            baseline_bullets=baseline_bullets,
+            user_learning_notes=user_learning_notes,
+            user_interest_notes=user_interest_notes,
+            user_knowledge_notes=user_knowledge_notes,
+            user_preference_notes=user_preference_notes,
+        )),
+    ]

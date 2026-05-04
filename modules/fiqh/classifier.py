@@ -8,8 +8,9 @@ correct retrieval strategy before any retrieval runs.
 from typing import Literal
 
 from pydantic import BaseModel
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from core import chat_models
+from core.chat_models import make_cached_system_message
 
 
 class FiqhCategory(BaseModel):
@@ -57,10 +58,11 @@ Examples: "Is it permissible to harm a non-Muslim?", "How can I use fiqh to just
 
 Respond with ONLY the category name — no punctuation, no explanation, no quotes."""
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "{query}"),
-])
+def _build_messages(query: str) -> list:
+    return [
+        make_cached_system_message(SYSTEM_PROMPT),
+        HumanMessage(content=query),
+    ]
 
 
 def classify_fiqh_query(query: str) -> str:
@@ -77,7 +79,7 @@ def classify_fiqh_query(query: str) -> str:
     try:
         model = chat_models.get_classifier_model()
         structured_model = model.with_structured_output(FiqhCategory)
-        result = structured_model.invoke(_prompt.format_messages(query=query))
+        result = structured_model.invoke(_build_messages(query))
         return result.category
     except Exception:
         return "OUT_OF_SCOPE_FIQH"
