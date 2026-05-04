@@ -120,6 +120,13 @@ class ChatState(TypedDict):
     iterations: int
     """Number of agent iterations (for debugging and limits)"""
 
+    # Cache metrics (Phase 19, D-07 option b — accumulated by _agent_node, read at SSE done)
+    cache_creation_tokens_total: int
+    """Sum of cache_creation_input_tokens across all _agent_node LLM calls this turn (D-05)"""
+
+    cache_read_tokens_total: int
+    """Sum of cache_read_input_tokens across all _agent_node LLM calls this turn (D-05)"""
+
     # Fiqh FAIR-RAG pipeline results
     fiqh_filtered_docs: List[Dict[str, Any]]
     """Final filtered fiqh documents from sub-graph exit. Empty list if fiqh path not taken."""
@@ -192,6 +199,8 @@ def create_initial_state(
         early_exit_message=None,
         errors=[],
         iterations=0,
+        cache_creation_tokens_total=0,
+        cache_read_tokens_total=0,
         fiqh_filtered_docs=[],
         fiqh_sea_result=None,
         fiqh_status_events=[],
