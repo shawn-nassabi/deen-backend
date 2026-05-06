@@ -71,3 +71,42 @@ def bind_sentry_scope(
         scope.set_tag("session_id", session_id)
     if user_id:
         scope.set_tag("user_id", user_id)
+
+
+def record_cache_metrics_breadcrumb(
+    *,
+    cache_efficiency_ratio: float,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+    iterations: int,
+) -> None:
+    """Emit a per-turn cache-efficiency breadcrumb on the current Sentry scope.
+
+    No-op when SENTRY_ENABLED is False (D-09) — local dev / unit tests must not
+    require Sentry. Called once per /chat/stream/agentic (or /chat/agentic) turn
+    at the SSE `done` boundary (D-01, D-02). Caller pre-computes the ratio and
+    handles the cold-cache (denominator 0) case as 0.0 (D-06).
+
+    Note: correlation_id is auto-attached via the request's isolation scope
+    (set by bind_sentry_scope in api/chat.py); the data dict carries diagnostic
+    counts only.
+
+    Args:
+        cache_efficiency_ratio: cache_read / (cache_read + cache_creation), 0.0..1.0
+        cache_read_tokens: sum across all _agent_node iterations this turn
+        cache_creation_tokens: sum across all _agent_node iterations this turn
+        iterations: number of _agent_node calls this turn
+    """
+    if not SENTRY_ENABLED:
+        return
+    sentry_sdk.add_breadcrumb(
+        category="cache_metrics",
+        level="info",
+        message="cache_efficiency",
+        data={
+            "cache_efficiency_ratio": cache_efficiency_ratio,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            "iterations": iterations,
+        },
+    )

@@ -1,382 +1,390 @@
-# Pitfalls Research: v1.3 Sentry Deep Integration
+# Pitfalls Research: v1.4 LLM Input Caching
 
-**Project:** Deen Backend — v1.3 Sentry Deep Integration
-**Researched:** 2026-04-26
-**Scope:** Adding structured Sentry logging with correlation_id, SENTRY_ENABLED gate, Sentry scope binding per request, and converting print() to logger.* across 4 files in an existing FastAPI + LangGraph + SSE streaming system
-**Confidence:** HIGH (code inspection + sentry-sdk changelog + official Sentry docs + GitHub issues)
+**Project:** Deen Backend — v1.4 LLM Input Caching
+**Researched:** 2026-05-03
+**Scope:** Adding Anthropic prompt caching (`cache_control`) to an existing LangGraph + ChatAnthropic + SSE streaming system. Covers silent failures, dynamic-content invalidation, tool use, structured output, streaming, LangGraph-specific hazards, and metrics collection.
+**Confidence:** HIGH (official Anthropic docs + LangChain GitHub issues + code inspection)
+
+---
+
+## Summary
+
+Anthropic prompt caching works by exact byte-for-byte prefix matching against a per-workspace cache. The cache is a content-addressed prefix store: if a single byte of the cached region changes between calls, there is a complete miss and the full prefix is billed at the 1.25× write rate. Silent success (the API always returns 200) is the most dangerous failure mode — the only signal that caching is broken is inspecting `usage.cache_creation_input_tokens` and `usage.cache_read_input_tokens` in the response.
+
+This codebase has five distinct LLM call sites (ChatAgent/bind_tools, decomposer, filter, SEA assessor, fiqh generator + streaming), each with different stability profiles and therefore different risk levels. The FAIR-RAG loop runs up to 3 iterations per fiqh query, which is the highest-value caching target. The main ChatAgent LLM is bound to 6 tools via `.bind_tools()`, and using the AnthropicPromptCachingMiddleware is **not compatible** with `bind_tools()` — they are mutually exclusive. That constraint shapes every decision in v1.4.
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause incorrect behavior, data leaks, or silent failures at production time.
+Mistakes that silently produce zero cache hits or introduce billing errors / API errors.
 
 ---
 
-### CRITICAL-1: `_experiments.enable_logs` will become a deprecation warning in sentry-sdk >=2.35.0
+### CRITICAL-1: Silent failure when cached content is below the minimum token threshold
 
 **What goes wrong:**
-The current `main.py` initializes Sentry with:
-```python
-sentry_sdk.init(
-    dsn=SENTRY_DSN,
-    send_default_pii=True,
-    _experiments={"enable_logs": True},
-)
+Anthropic's API accepts `cache_control` markers on any content block regardless of length, but silently ignores them if the total cached prefix does not meet the model's minimum. No error is returned. Both `cache_creation_input_tokens` and `cache_read_input_tokens` will be 0 in the response, but the call succeeds and bills at the normal rate.
+
+**Minimum token thresholds for this project's models (confirmed from official docs):**
+- `claude-sonnet-4-6` (`LARGE_LLM`): **2048 tokens** minimum
+- `claude-haiku-4-5-20251001` (`SMALL_LLM`): **4096 tokens** minimum
+
+**Impact on this codebase:**
+- `AGENT_SYSTEM_PROMPT` in `agents/prompts/agent_prompts.py` is ~700–800 words ≈ ~900–1100 tokens. Below the 2048-token threshold for Sonnet. System prompt alone cannot be cached without adding tool definitions to the prefix.
+- Tool definitions for 6 tools bound to `ChatAgent` add approximately 800–1200 tokens. System + tools together: ~1700–2300 tokens. This is near the Sonnet threshold — must measure precisely before assuming cache eligibility.
+- `SYSTEM_PROMPT` in `modules/fiqh/decomposer.py` is ~200 tokens. Far below 4096 for Haiku. Decomposer caching is **not viable** without a much longer system prompt.
+- `SYSTEM_PROMPT` in `modules/fiqh/filter.py` is ~100 tokens. Not viable for caching.
+- `SYSTEM_PROMPT` in `modules/fiqh/sea.py` is ~200 tokens. Not viable for caching on its own.
+- `SYSTEM_PROMPT` in `modules/fiqh/generator.py` is ~150 tokens. Not viable for caching on its own.
+
+**Prevention:**
+- Before adding `cache_control` to any call site, estimate token count using `tiktoken` (or the Anthropic token counter). Only apply caching to call sites where static content meets the threshold.
+- After applying `cache_control`, verify the first response has `cache_creation_input_tokens > 0` and the second identical call has `cache_read_input_tokens > 0`. If both are 0, the content is below threshold.
+- The most reliable target is the `ChatAgent` system prompt + tool definitions together. Add tool definitions to the cached prefix and verify the combined count clears 2048 tokens for Sonnet.
+- For Haiku call sites (decomposer, filter, SEA, refiner — all at `chat_models.get_classifier_model()`), caching the system prompt alone is almost certainly below 4096 tokens. These call sites likely cannot be cached unless retrieved evidence is also included in the cached prefix (which is usually dynamic — see CRITICAL-2).
+
+**Confidence:** HIGH — confirmed from official Anthropic prompt caching documentation.
+
+---
+
+### CRITICAL-2: Caching dynamic content (retrieved evidence) causes 0% hit rate
+
+**What goes wrong:**
+Anthropic's cache is a prefix store: the exact bytes of the cached content must be identical across calls. Retrieved fiqh documents change every request (different queries return different chunks from Pinecone). If `cache_control` is applied to a content block that contains any retrieved documents, the hash never matches across calls.
+
+**At-risk patterns in this codebase:**
+- `modules/fiqh/filter.py`: `_prompt.format_messages(query=query, evidence=_format_evidence_with_ids(docs))` — both `query` and `evidence` are dynamic. No static prefix long enough to cache.
+- `modules/fiqh/sea.py`: `_prompt.format_messages(query=query, evidence=_format_evidence(docs))` — same issue.
+- `modules/fiqh/generator.py`: `_prompt.format_messages(query=query, evidence=_format_evidence(docs))` — same issue.
+- `_generate_response_node` in `chat_agent.py`: The `HumanMessage` content includes `state['user_query']` and the `references` string (retrieved docs). This is entirely dynamic.
+
+**The write-overhead trap:**
+Applying `cache_control` to a block that changes every request causes a new cache **write** every call (billed at 1.25× the normal rate) with zero reads. This is strictly more expensive than not caching at all: every call pays the write surcharge with no offset from hits.
+
+**Prevention:**
+- Only apply `cache_control` to content blocks that are identical across the requests that should share the same cache entry.
+- The evidence/retrieved context blocks in fiqh pipeline calls must NOT be marked with `cache_control`.
+- The system prompts for decomposer, filter, SEA, generator are static text and can be tagged — but they must meet the minimum token threshold (see CRITICAL-1). Since these short prompts do not reach 4096 tokens alone, and adding dynamic evidence would break the cache, these Haiku call sites have limited caching opportunity unless prompt length is substantially increased.
+- The `AGENT_SYSTEM_PROMPT` with tool definitions is the primary viable target because it is static across all non-fiqh requests.
+
+**Confidence:** HIGH — cache invalidation on any prefix change is a documented fundamental of Anthropic's caching design.
+
+---
+
+### CRITICAL-3: `AnthropicPromptCachingMiddleware` is incompatible with `bind_tools()`
+
+**What goes wrong:**
+`langchain_anthropic.middleware.AnthropicPromptCachingMiddleware` is documented to work exclusively with LangChain's `create_agent()` pattern. It is explicitly **incompatible with `bind_tools()`**.
+
+`ChatAgent._create_llm_with_tools()` in `agents/core/chat_agent.py` calls `llm.bind_tools(self.tools)`. Attempting to layer `AnthropicPromptCachingMiddleware` on top of this will either fail silently or conflict with the bound tool definitions.
+
+**Consequence:**
+Using the middleware with `bind_tools()` is not supported. The correct approach for the `ChatAgent` is to apply `cache_control` explicitly in the message construction rather than via middleware.
+
+**Specific implementation required for ChatAgent:**
+1. The tool definitions are cached by adding `cache_control={"type": "ephemeral"}` to the last tool in the tools list when constructing the `bind_tools()` call (this requires passing tools as dicts with `cache_control` fields, or using the `@tool(extras={"cache_control": ...})` decorator pattern).
+2. Alternatively, apply `cache_control` on the `SystemMessage` content block in `_agent_node` when constructing the messages list: `SystemMessage(content=[{"type": "text", "text": AGENT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}])`.
+
+**Confidence:** HIGH — confirmed from LangChain official middleware documentation, explicit incompatibility note.
+
+---
+
+### CRITICAL-4: `cache_control` inside `ToolMessage` content blocks causes `invalid_cache` API error
+
+**What goes wrong:**
+GitHub issue #34920 in `langchain-ai/langchain` documents that placing `cache_control` inside the content blocks of a `ToolMessage` (e.g., `ToolMessage(content=[{"type": "text", "text": "...", "cache_control": {...}}])`) causes Anthropic's API to return:
+
 ```
-In sentry-sdk 2.27.0 (pinned in `requirements.txt`), placing `enable_logs` inside `_experiments` is the correct location — the option was still experimental. However, `enable_logs` was promoted to a stable top-level option in sentry-sdk 2.35.0 and using `_experiments` for it now emits a `DeprecationWarning`. In a future major version, `_experiments.enable_logs` will be removed entirely.
-
-**Consequence at current version (2.27.0):**
-The `_experiments` form works correctly at 2.27.0. No immediate breakage. The pitfall is version drift: if `requirements.txt` is bumped past 2.35.0 without updating the init call, logs will continue to function but with deprecation noise in stderr, and eventually stop working when the experimental API is removed.
-
-**Prevention:**
-- At 2.27.0, leave `_experiments={"enable_logs": True}` as-is — it is the correct form for this version.
-- Add a comment in `main.py` at the `_experiments` call: `# TODO: move to top-level enable_logs=True when sentry-sdk >= 2.35.0`.
-- When bumping sentry-sdk past 2.35.0 in a future PR, migrate to `sentry_sdk.init(dsn=..., enable_logs=True)`.
-- Do NOT proactively move it to top-level now — that will break at 2.27.0 where `enable_logs` is not a recognized top-level kwarg.
-
-**Confidence:** HIGH — confirmed via sentry-sdk changelog and PyPI release notes.
-
----
-
-### CRITICAL-2: Dual capture — INFO logs become both Sentry log entries AND breadcrumbs when `enable_logs=True`
-
-**What goes wrong:**
-With `enable_logs=True` active, any `logger.info(...)` call is captured by the Sentry logging integration via three separate handlers:
-- `BreadcrumbHandler` — attaches the log as a breadcrumb on the current request event (INFO+ threshold, default behavior)
-- `SentryLogsHandler` — sends the log as a discrete Sentry Log entry counted against the logs quota
-
-This means converting the `print()` calls in `core/pipeline_langgraph.py` (which fires for every SSE chunk iteration) and `agents/tools/retrieval_tools.py` to `logger.info(...)` will double-count: every INFO log entry is both a breadcrumb and a billable Sentry log item. High-volume INFO logs (e.g., `[AGENTIC PIPELINE] Node: agent` emitted on each graph node traversal — 5-8 times per request) will rapidly consume the 5GB logs quota included in Sentry plans.
-
-**The specific hot paths in this codebase:**
-- `core/pipeline_langgraph.py` line 91: `print(f"[AGENTIC PIPELINE] Starting for query: {user_query[:100]}")` — once per request, acceptable.
-- `core/pipeline_langgraph.py` line 123: `print(f"[AGENTIC PIPELINE] Node: {node_name}")` — fires 5-8 times per request for every LangGraph node traversal. Converting this to `logger.info()` means 5-8 Sentry log entries per chat request.
-- Tool error `print()` calls in `retrieval_tools.py` — these are exception paths, appropriate for `logger.warning()` or `logger.error()`, not `logger.info()`.
-
-**Prevention:**
-- Reserve `logger.info()` for request-level events: request start, request end, early exits. NOT for per-node LangGraph traversal.
-- Convert the node traversal print to `logger.debug()` — debug level is NOT captured by Sentry's logging integration (threshold is INFO by default), so it logs locally but does not create Sentry entries.
-- Add a `before_send_log` hook (available as stable in sentry-sdk 2.35.0, experimental earlier) or configure `LoggingIntegration(level=logging.WARNING, event_level=logging.ERROR)` to raise the Sentry capture threshold above INFO.
-- Rule: Sentry logs should answer "did this request succeed and why not?" — not "what did every node do?".
-
-**Confidence:** HIGH — confirmed from Sentry logs billing docs and logging integration source.
-
----
-
-### CRITICAL-3: `send_default_pii=True` in production sends full request bodies — user queries are PII
-
-**What goes wrong:**
-`main.py` currently initializes with `send_default_pii=True`. This flag instructs the Sentry FastAPI/Starlette integration to capture:
-- The full HTTP request body (which for `/chat/stream/agentic` includes `user_query`, `session_id`, `target_language`, and the `config` object)
-- User IP addresses
-- Authentication headers (the Supabase JWT Bearer token)
-
-For this application, `user_query` contains the user's Islamic religious questions. Under GDPR Article 9, religious beliefs and practices are **special category personal data** with stricter processing requirements. Sending these queries to a third-party service (Sentry's US-hosted infrastructure) without explicit user consent for that specific processing purpose creates a GDPR compliance risk.
-
-Additionally, if a user asks a sensitive fiqh question about personal religious matters (inheritance, purity, personal circumstances), that exact text will appear in Sentry event payloads, Sentry issue titles, and Sentry log entries — visible to all Sentry project members.
-
-**Prevention:**
-1. Remove `send_default_pii=True` from `sentry_sdk.init()` for the default path. The FastAPI integration will then omit IP addresses, auth headers, and full request bodies.
-2. Add a `before_send` hook that explicitly truncates or omits `user_query` from the event body:
-   ```python
-   def scrub_pii(event, hint):
-       # Remove user query from request body in Sentry events
-       req = event.get("request", {})
-       body = req.get("data", {})
-       if isinstance(body, dict) and "user_query" in body:
-           body["user_query"] = "[REDACTED]"
-       return event
-   ```
-3. If correlation_id and session_id are attached to scope as tags (acceptable — they are pseudonymous identifiers, not PII), ensure `user_id` (the actual Supabase user UUID) is treated carefully: set it on the Sentry user context as `id` only, never `email` or `username`.
-4. Do not log `user_query` content in any `logger.info()` call that would flow to Sentry. Log only a truncated hash or the first 20 characters max if needed for debugging.
-
-**Confidence:** HIGH — `send_default_pii` behavior confirmed from official Sentry docs; GDPR Article 9 classification of religious data is established law.
-
----
-
-### CRITICAL-4: Exceptions inside `response_generator()` async generator are NOT captured by the global catch-all middleware
-
-**What goes wrong:**
-`main.py` has a catch-all middleware:
-```python
-@app.middleware("http")
-async def catch_exceptions_mw(request: Request, call_next):
-    try:
-        return await call_next(request)
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-        return JSONResponse(status_code=500, ...)
+invalid_cache: cache_control is not supported at messages.N.content.0.content.0.cache_control
 ```
 
-The `/chat/stream/agentic` route returns a `StreamingResponse`. FastAPI's `call_next` returns the `StreamingResponse` object immediately — **before** the `response_generator()` async generator runs. The middleware's `try/except` exits successfully when the `StreamingResponse` is constructed. The actual generator body runs later, when the client reads bytes from the stream, outside the middleware's exception scope.
+The error occurs because LangChain passes the `cache_control` from the nested content block verbatim, but Anthropic's API requires it at the top-level `tool_result` object, not inside the nested content array.
 
-An exception thrown inside `response_generator()` — after the middleware has already returned — is NOT caught by `catch_exceptions_mw`. The existing Sentry `capture_exception(e)` call in the middleware never fires for SSE generator errors.
-
-This is confirmed: the existing `core/pipeline_langgraph.py` already has an explicit `except Exception` block inside `response_generator()` that calls `print(f"[AGENTIC PIPELINE] Error: {e}")`. That print-based approach was the only capture mechanism before Sentry was added.
-
-**Current state after `fb7286d` commit:** The commit message says "explicitly capture exceptions swallowed by catch_exceptions_mw" — implying an explicit `sentry_sdk.capture_exception(e)` was likely added inside the `except` block in `response_generator()`. Verify this is present.
+**At-risk pattern:**
+If any implementation attempt tries to cache retrieved documents by adding `cache_control` to tool result content blocks (e.g., to cache tool results from `retrieve_shia_documents_tool`), the API call will fail with a hard error.
 
 **Prevention:**
-- The existing `except Exception` block in `response_generator()` (lines 375-391 of `pipeline_langgraph.py`) must call `sentry_sdk.capture_exception(e)` explicitly. Do not rely on the middleware for SSE exceptions.
-- When converting `print(f"[AGENTIC PIPELINE] Error: {e}")` to `logger.error(...)`, confirm that the `logger.error()` call with `exc_info=True` will correctly propagate the error to Sentry via the logging integration OR add an explicit `sentry_sdk.capture_exception()` alongside it. Using `logger.error("msg", exc_info=True)` with the Sentry logging integration active WILL create a Sentry error event — but only if `event_level=logging.ERROR` (the default). Confirm this is not overridden by a custom `LoggingIntegration` configuration.
-- Apply the same pattern to the inner `except Exception as memory_exc` at line 388 — this exception is currently only printed and not captured.
+- Never place `cache_control` inside the content array of `ToolMessage` objects.
+- If caching tool results is needed (generally not recommended — tool results are dynamic), use `ToolMessage(content=[...], cache_control={"type": "ephemeral"})` at the message level, not inside content blocks.
+- In practice: do not attempt to cache tool result messages at all. The retrieved document content changes per request, so tool result caching provides no value and risks `invalid_cache` errors.
 
-**Confidence:** HIGH — FastAPI StreamingResponse lifecycle is well-documented; the middleware scope vs. generator execution timing is confirmed behavior.
-
----
-
-## High Pitfalls
-
-Mistakes that cause subtle incorrect behavior or data quality problems.
+**Confidence:** HIGH — confirmed from GitHub issue #34920 with reproduction and confirmed API error message.
 
 ---
 
-### HIGH-1: ContextVar correlation_id is NOT automatically propagated into sync LangGraph nodes that run in a thread executor
+### CRITICAL-5: `input_tokens` in LangChain usage metadata double-counts cached tokens (known bug)
 
 **What goes wrong:**
-Python's `contextvars.ContextVar` propagates automatically across `await` chains within the same async context. However, `asyncio.to_thread()` and `loop.run_in_executor()` do copy the context (as of Python 3.7), so a value set before the `await asyncio.to_thread(...)` call IS visible in the thread.
+GitHub issue #32818 in `langchain-ai/langchain` documents that with `langchain-anthropic` (including 0.3.x), the `usage_metadata["input_tokens"]` field includes `cache_read_input_tokens` in its count, making it appear much larger than the actual freshly-processed input. The Anthropic API correctly reports them separately (e.g., `input_tokens: 3`, `cache_read_input_tokens: 151995`), but LangChain combines them: reported `input_tokens: 151998`.
 
-The specific risk in this codebase is `chain.stream()` calls (synchronous LLM streaming) that run inside the `async def response_generator()`. These are NOT dispatched to a thread executor — they run synchronously, blocking the event loop inline. The ContextVar IS available for inline sync calls because they run in the same OS thread as the coroutine.
+Additionally, when using `chain.stream()` or `model.stream()`, cache token counts in `usage_metadata.input_token_details` can be double the actual values because the Anthropic streaming API emits cache token counts in both `message_start` and `message_delta` SSE events as cumulative values, and LangChain sums them.
 
-However, LangGraph itself may dispatch sync node functions to a thread pool internally when running via `compiled_graph.astream()`. If a LangGraph node function (e.g., a tool in `agents/tools/`) runs in a thread spawned by LangGraph's internal executor, and you try to read `correlation_id_var.get()` inside that tool function, it will return `None` rather than the request-scoped value — even though the ContextVar was set correctly in the middleware.
-
-**Why this matters:**
-If the correlation_id middleware sets `correlation_id_var.set(new_uuid)` at request entry and you then call `logger.info(f"[{correlation_id_var.get()}] Retrieved docs")` inside `retrieve_shia_documents_tool()`, you may get `None` or a stale value depending on whether LangGraph dispatched that node to a new thread.
+**Consequence for cache metrics logging:**
+The Sentry/structured logging instrumentation in v1.3 uses `extra={}` style logging. If cache metrics are extracted from `response.usage_metadata` in streaming calls, the values will be inaccurate. Logging `cache_read_input_tokens` as a cost metric from streaming responses will report inflated numbers.
 
 **Prevention:**
-- Do not rely on ContextVar reads inside `agents/tools/` functions for correlation_id. Instead, thread correlation_id through explicit function arguments or through LangGraph's `ChatState` dict (add a `correlation_id` field to `ChatState`).
-- If ContextVar-based propagation is required, use `contextvars.copy_context().run(fn)` when dispatching to threads manually. For LangGraph-internal thread dispatch, the safest pattern is to pass correlation_id as part of the state that LangGraph carries natively.
-- For the middleware and route handler level (where the ContextVar IS reliably set), ContextVar reads are safe.
-- For `core/pipeline_langgraph.py`'s `response_generator()` function itself (async generator, not in a thread), ContextVar reads are safe.
+- For non-streaming calls, read cache metrics directly from `response.response_metadata["usage"]` (the raw Anthropic API response dict), which has the correct values: `cache_creation_input_tokens` and `cache_read_input_tokens` as separate fields.
+- For streaming calls using `chain.stream()` (the pattern used in `core/pipeline_langgraph.py` for the generation step), do not use the accumulated chunk's usage metadata for cache hit/miss metrics. Instead, use `model.invoke()` for the specific call sites where you need accurate cache metrics, or explicitly subtract the known double-counted fields.
+- Log a boolean `cache_hit: true/false` (based on `cache_read > 0`) and the raw `cache_read_input_tokens` value from the non-streaming path. For the streaming path, acknowledge that the reported numbers may be ~2× actual.
+- Issue status: still open as of langchain-anthropic 0.3.22 (installed version). No fix shipped yet.
 
-**Confidence:** MEDIUM — Python's context propagation to `asyncio.to_thread` is documented. LangGraph's internal thread dispatch behavior is less documented; confirmed by community issues showing context leaks in nested graph invocations.
+**Confidence:** HIGH — confirmed from GitHub issue #32818 and the langchain-anthropic 0.3.19 bug report with reproduction steps.
 
 ---
 
-### HIGH-2: Sentry scope tags set with `sentry_sdk.set_tag()` in async middleware leak across concurrent requests
+## Integration Pitfalls
+
+Mistakes at the intersection of Anthropic caching APIs and this codebase's patterns.
+
+---
+
+### INTEGRATION-1: ChatAnthropic instances created per-call in `core/chat_models.py` lose cache write investment
 
 **What goes wrong:**
-When adding Sentry scope binding in a middleware (e.g., `sentry_sdk.set_tag("correlation_id", cid)`), the behavior depends on which scope the tag is written to. The Sentry Python SDK uses three scope layers:
-- **Global scope**: Shared across all requests — modifications here leak everywhere.
-- **Isolation scope**: Per-request, created by the FastAPI/Starlette integration automatically.
-- **Current scope**: Per-span/per-operation.
+Every function in `core/chat_models.py` (`get_generator_model()`, `get_classifier_model()`, etc.) constructs a **new** `ChatAnthropic` instance on every call:
 
-Calling `sentry_sdk.set_tag(...)` at the top-level API writes to the **current scope**, which in an async ASGI application may be shared between concurrent requests if you call it outside of a properly isolated context.
-
-The FastAPI integration (included via `sentry-sdk[fastapi]`) creates one isolation scope per HTTP request when the middleware is active. BUT if your custom correlation_id middleware calls `sentry_sdk.set_tag()` before the FastAPI integration's own scope setup completes, you may be writing to the wrong scope layer.
-
-**The `new_scope` context manager (2.x recommended pattern):**
 ```python
-with sentry_sdk.new_scope() as scope:
-    scope.set_tag("correlation_id", cid)
-    scope.set_tag("session_id", session_id)
-    response = await call_next(request)
-```
-This forks the current scope for the duration of the block, ensuring tags do not bleed into other requests. However, `new_scope` only covers code within the `with` block — if you yield to an async generator (like `StreamingResponse`), the scope exits before the generator runs.
-
-**The correct pattern for SSE streaming with Sentry scope:**
-Use `sentry_sdk.get_isolation_scope()` (stable in sentry-sdk 2.x) to write to the per-request isolation scope that the FastAPI integration already created:
-```python
-scope = sentry_sdk.get_isolation_scope()
-scope.set_tag("correlation_id", cid)
-scope.set_user({"id": user_id})
-```
-This is safe because the isolation scope is tied to the ASGI request lifecycle, not just a context manager block, and persists through the async generator's execution.
-
-**Prevention:**
-- Use `sentry_sdk.get_isolation_scope().set_tag(...)` and `.set_user(...)` in the correlation_id middleware and route handlers.
-- Never use bare `sentry_sdk.set_tag()` in async code paths that handle concurrent requests.
-- Do not use the deprecated `configure_scope()` context manager (removed in sentry-sdk 2.x).
-
-**Confidence:** HIGH — confirmed from sentry-sdk 2.x migration guide and scope architecture documentation.
-
----
-
-### HIGH-3: `logger.error()` inside the `except` block AND `sentry_sdk.capture_exception()` in the same block creates duplicate Sentry error events
-
-**What goes wrong:**
-When `enable_logs=True` and the Sentry logging integration is active, calling `logger.error("msg", exc_info=True)` inside an `except` block creates a **Sentry error event** (because `event_level=logging.ERROR` is the default threshold for creating events, not just log entries). If you then also call `sentry_sdk.capture_exception(e)` in the same `except` block, the error is sent to Sentry twice — consuming two error events against your quota.
-
-This is a documented known issue (sentry-python issue #1468): when `logging.exception()` is called before `sentry_sdk.capture_exception()` in the same except block, the second call is silently ignored in some versions. In other configurations, both fire.
-
-**The existing `catch_exceptions_mw` is already vulnerable:**
-```python
-except Exception as e:
-    print("\n===== SERVER EXCEPTION =====\n", tb, "\n============================\n")
-    sentry_sdk.capture_exception(e)  # explicit capture
-    return JSONResponse(...)
-```
-If this `print()` is converted to `logger.error(..., exc_info=True)`, and the logging integration creates an error event, the explicit `sentry_sdk.capture_exception(e)` may duplicate it.
-
-**Prevention:**
-- In `catch_exceptions_mw`: convert `print()` to `logger.error()` but WITHOUT `exc_info=True`, and keep the explicit `sentry_sdk.capture_exception(e)`. The logger call provides the breadcrumb trail; `capture_exception` provides the event. This avoids duplication.
-- In `response_generator()`'s `except` block: use `logger.error("Pipeline error: %s", e)` (no `exc_info`) + `sentry_sdk.capture_exception(e)` explicitly — consistent pattern.
-- Alternatively, use ONLY `logger.error("msg", exc_info=True)` and REMOVE explicit `capture_exception()` calls, relying on the logging integration to create events. But not both.
-- Pick one pattern and apply it consistently across all exception handlers.
-
-**Confidence:** HIGH — confirmed from sentry-python issue #1468 and logging integration documentation.
-
----
-
-### HIGH-4: SENTRY_ENABLED env var gate vs. SENTRY_DSN absence — two different gate mechanisms create confusion
-
-**What goes wrong:**
-The current `main.py` already uses `SENTRY_DSN` as the gate:
-```python
-if SENTRY_DSN:
-    sentry_sdk.init(...)
-```
-The v1.3 plan adds a separate `SENTRY_ENABLED` env var as an explicit opt-in. Having two mechanisms (`SENTRY_DSN` presence AND `SENTRY_ENABLED=true`) creates ambiguity:
-- What if `SENTRY_DSN` is set in `.env` but `SENTRY_ENABLED=false`? Should Sentry be active?
-- What if `SENTRY_ENABLED=true` but `SENTRY_DSN` is absent? Silent failure or loud error?
-- In Docker Compose, a variable may be set to an empty string vs. unset — both evaluate differently.
-
-The more dangerous failure mode: a developer sets `SENTRY_DSN` in their local `.env` for testing but forgets to set `SENTRY_ENABLED=false`, causing local development queries (including test queries with real user data patterns) to be sent to the production Sentry project.
-
-**Prevention:**
-- Collapse to a single gate: `SENTRY_ENABLED=true` is required AND `SENTRY_DSN` must be set. If either is absent, Sentry does not initialize.
-- Explicitly require `SENTRY_ENABLED=true` (not just truthy `SENTRY_DSN`) so the behavior is opt-in and obvious.
-- Add a startup log: `logger.info("Sentry initialized for environment: %s", ENV)` when Sentry is active, and `logger.info("Sentry disabled (SENTRY_ENABLED not set)")` when it is not.
-- Add `SENTRY_ENABLED=false` as the default in `.env.example` to protect local development.
-
-**Confidence:** HIGH — derived from code inspection of `main.py` and `core/config.py`.
-
----
-
-## Moderate Pitfalls
-
-Mistakes that degrade observability quality or create operational friction.
-
----
-
-### MODERATE-1: Converting `print()` in tool `except` blocks to `logger.info()` silently swallows error context
-
-**What goes wrong:**
-`agents/tools/retrieval_tools.py` uses this pattern in every tool's except block:
-```python
-except Exception as e:
-    print(f"[retrieve_shia_documents_tool] Error: {e}")
-    return {"documents": [], "count": 0, "error": str(e)}
+def get_generator_model():
+    return ChatAnthropic(model=LARGE_LLM, api_key=ANTHROPIC_API_KEY, max_tokens=4096)
 ```
 
-Tool errors are intentionally non-fatal: the graph continues running and the tool returns an error dict. This is by design — LangGraph tools should not raise. The risk when converting to `logger.*` is choosing the wrong level:
-
-- `logger.info(f"Tool error: {e}")` — error is captured as a Sentry log entry at INFO level, but does NOT create a Sentry error event. A tool failing silently is difficult to detect in Sentry.
-- `logger.error(f"Tool error: {e}")` — creates a Sentry error event. But if retrieval tools fail on every request due to a Pinecone outage, this spams the Sentry error quota.
-- `logger.warning(f"Tool error: {e}")` — creates a Sentry breadcrumb and (with `enable_logs=True`) a log entry, but not an error event. Most appropriate for recoverable tool failures.
+The `ChatAnthropic` instance itself does not own the cache — the cache lives on Anthropic's servers and is keyed by the exact content prefix. However, creating a new instance per call means any per-instance configuration (such as `model_kwargs` or invocation-level settings) is re-applied each call. More importantly, the FAIR-RAG loop creates a generator model, a classifier model, and a filter model on each of its up to 3 iterations. The LLM client instance object is discarded after each call. This is fine for caching correctness (cache lives server-side), but it means per-request startup overhead is repeated unnecessarily, and it makes applying `cache_control` at the instance level (e.g., as a default invocation parameter) require modifying all call sites simultaneously.
 
 **Prevention:**
-- Use `logger.warning("retrieve_shia_documents_tool error: %s", e)` for recoverable tool failures (Pinecone timeout, empty result). This avoids creating Sentry error events for expected transient failures.
-- Use `logger.error("retrieve_shia_documents_tool unexpected error: %s", e, exc_info=True)` only for truly unexpected errors (e.g., import errors, type errors) — and pair with explicit `sentry_sdk.capture_exception(e)`.
-- Add a `retrieval_error` tag to the Sentry scope when a tool fails, so errors are filterable: `sentry_sdk.get_isolation_scope().set_tag("retrieval_failed", "true")`.
+- Move `ChatAnthropic` instantiation from inside per-call functions to module-level singletons. This is cheap — `ChatAnthropic` is a configuration object, not a connection. Module-level singletons make it easy to add `cache_control` defaults at the instance level rather than at every `invoke()` call site.
+- For FAIR-RAG call sites specifically, the 3-iteration loop calls `get_generator_model()` in `filter.py`, `sea.py`, and `generator.py` on each iteration. Singleton instances avoid 3 redundant object constructions per fiqh request.
 
-**Confidence:** HIGH — derived from code inspection of all tool error paths.
+**Confidence:** HIGH — code inspection of `core/chat_models.py`.
 
 ---
 
-### MODERATE-2: Correlation_id set in middleware is not visible in LangGraph sub-graph invocations
+### INTEGRATION-2: `ChatPromptTemplate.format_messages()` produces plain `str` content blocks, stripping `cache_control`
 
 **What goes wrong:**
-The FAIR-RAG fiqh sub-graph (`agents/fiqh/fiqh_graph.py`) is invoked as `fiqh_subgraph.invoke(fiqh_state)` inside the main LangGraph agent. When the sub-graph runs, it creates its own execution context. Any logs emitted inside fiqh sub-graph nodes (e.g., `fiqh_decompose`, `fiqh_retrieve`, `fiqh_assess`) will not carry the correlation_id from the parent request's ContextVar if those nodes run in a different thread context.
+`ChatPromptTemplate.format_messages()` returns `BaseMessage` objects with `content` as a plain `str`. When `content` is a `str`, there is no place to attach a `cache_control` dict — it is not a content block list. The LangChain Anthropic integration only passes `cache_control` to the API when `content` is a list of dicts (the structured content blocks format).
 
-This means: for fiqh requests (the most complex and error-prone path), the correlation_id that links all log entries across the request may be absent from the most important diagnostic logs.
+This affects every fiqh module prompt:
+- `modules/fiqh/decomposer.py`, `filter.py`, `sea.py`, `generator.py` all use `ChatPromptTemplate.from_messages([...]).format_messages(...)`.
+
+GitHub issue #26701 documents this incompatibility: Anthropic prompt caching does not work when the message content is a plain string generated by `format_messages()`.
+
+**Consequence:**
+Trying to add `cache_control` to the system prompt of any fiqh module using the existing `ChatPromptTemplate` pattern will silently fail — no error, no cache write, `cache_creation_input_tokens = 0`.
 
 **Prevention:**
-- Pass `correlation_id` as a field in `FiqhState` (add it to the TypedDict) so it is threaded explicitly through sub-graph nodes.
-- In fiqh sub-graph node functions, read `state["correlation_id"]` and include it as a `extra` kwarg in logger calls: `logger.info("...", extra={"correlation_id": state["correlation_id"]})`.
-- The `ExtraFormatter` in `core/logging_config.py` already appends extra dict keys as `key=value` pairs to log messages — this pattern works with the existing formatter.
+- For call sites where `cache_control` should be applied to the system message, do NOT use `ChatPromptTemplate.format_messages()` to construct the messages. Instead, construct the message list manually with structured content blocks:
 
-**Confidence:** MEDIUM — based on LangGraph context isolation behavior and code inspection of FiqhState structure.
-
----
-
-### MODERATE-3: `ExtraFormatter` in `core/logging_config.py` exposes ALL extra dict keys — easy to accidentally log PII
-
-**What goes wrong:**
-`core/logging_config.py`'s `ExtraFormatter.format()` appends every key from `record.__dict__` that is not in `_RESERVED` to the log line as `key=value`. This means any `extra={"user_query": "..."}` kwarg passed to a logger call will appear verbatim in the formatted log output — and, if Sentry is active, in Sentry log entries.
-
-The danger: a developer adding a log statement for debugging adds `extra={"query": user_query}` to get richer context locally. This goes to production, logs full user queries to Sentry, and violates PII handling rules.
-
-**Prevention:**
-- Establish a policy: `extra` dict keys that may contain user-generated content must be truncated or hashed before logging. Example: `extra={"query_preview": user_query[:30]}` rather than the full query.
-- Document the allowed set of `extra` fields in a comment near `ExtraFormatter` — e.g., `correlation_id`, `session_id`, `endpoint`, `user_id` (UUID only), `duration_ms`, `doc_count`, `tool_name`. Flag anything with free-form text as PII risk.
-- Consider overriding `ExtraFormatter` to apply a denylist of field names that are scrubbed before formatting: `if k in {"query", "user_query", "message_content"}: v = "[REDACTED]"`.
-
-**Confidence:** HIGH — derived from `ExtraFormatter` code inspection.
-
----
-
-### MODERATE-4: Per-node LangGraph status prints are high-cardinality — converting to INFO creates quota pressure
-
-**What goes wrong:**
-`core/pipeline_langgraph.py` line 123:
 ```python
-print(f"[AGENTIC PIPELINE] Node: {node_name}")
+from langchain_core.messages import SystemMessage, HumanMessage
+
+messages = [
+    SystemMessage(content=[
+        {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+    ]),
+    HumanMessage(content=f"Query: {query}\n\nEvidence:\n{evidence}"),
+]
+response = model.invoke(messages)
 ```
-This fires for every LangGraph node traversal. A typical non-fiqh request traverses: `fiqh_classification` → `agent` → `tools` → `agent` (possibly twice) → `generate_response` → `check_early_exit` = 6 nodes. A fiqh request adds `fiqh_subgraph` with its internal nodes. That is 6-10 log entries per request at INFO level, directly to Sentry.
 
-At 1,000 daily active users × 5 requests each × 7 nodes = 35,000 INFO log entries per day. The free Sentry tier includes 5GB of logs, but at scale this will trigger quota alerts and PAYG overages.
+- This pattern requires refactoring the `_prompt = ChatPromptTemplate.from_messages([...])` in fiqh modules. The refactor is small but must be done for caching to function.
+- The `AGENT_SYSTEM_PROMPT` in `chat_agent.py` is already constructed as a `SystemMessage(content=AGENT_SYSTEM_PROMPT)` — converting this to the structured content block format is straightforward.
 
-**Prevention:**
-- Convert node traversal logging to `logger.debug()`, not `logger.info()`. Debug is below the Sentry logging integration's default threshold (INFO) and will NOT be sent to Sentry — but still appears in local terminal output.
-- Only log meaningful state transitions at INFO: request start, early exit triggered, fiqh path selected, final response generated, error encountered.
-- The `[AGENTIC PIPELINE] Starting for query:` print (line 91) is appropriate at INFO — once per request, actionable.
-
-**Confidence:** HIGH — derived from code inspection and Sentry quota documentation.
+**Confidence:** HIGH — GitHub issue #26701, confirmed behavior in langchain-anthropic.
 
 ---
 
-## Minor Pitfalls
-
-Low severity but worth avoiding to prevent confusion or tech debt.
-
----
-
-### MINOR-1: `sentry_sdk.init()` must execute before any logger is constructed that will send to Sentry
+### INTEGRATION-3: Tool definitions in `bind_tools()` are not automatically cached — explicit `cache_control` required per tool
 
 **What goes wrong:**
-`main.py` calls `sentry_sdk.init()` near the top of the file, but other modules (e.g., `core/logging_config.py`) may be imported before `sentry_sdk.init()` runs if those modules are referenced at module import time in `main.py`. The Sentry logging integration patches the `logging.Logger` class at init time. Any logger constructed before `init()` runs may not have the Sentry handler attached.
+Calling `llm.bind_tools(self.tools)` in `ChatAgent._create_llm_with_tools()` passes the tool schemas to the API but does NOT attach `cache_control` to any of them. Anthropic's API places tool definitions before the system message in the caching hierarchy (Tools → System → Messages). If tool definitions are not cached, every call reprocesses them, and any `cache_control` on the system message starts from the wrong position in the hierarchy.
 
-In practice, `core/logging_config.py` is only called via `setup_logging()` (called explicitly from route handlers or on first use), so this is not currently a problem. But if `setup_logging()` is ever moved to module-level (e.g., `setup_logging()` at the top of `core/logging_config.py`), loggers created before `sentry_sdk.init()` will not send to Sentry.
+For the ChatAgent's 6 tools, the tool definitions collectively represent a significant static payload. Not caching them wastes the largest static cacheable block in the agent path.
 
 **Prevention:**
-- Keep `sentry_sdk.init()` as the first non-import statement in `main.py` — before any route module imports.
-- The current `main.py` structure already does this correctly. Preserve this ordering in all future changes.
+- Use LangChain's `@tool(extras={"cache_control": {"type": "ephemeral"}})` decorator on the last tool in the list, OR construct tool dicts manually with `cache_control` on the last tool entry.
+- Per Anthropic's caching model, only the LAST tool definition needs `cache_control` — this marks the end of the tools prefix as the cache breakpoint, and all preceding tool definitions are included in the cached prefix automatically.
+- After `bind_tools()`, verify with a test call that `cache_creation_input_tokens > 0` and that a second identical call produces `cache_read_input_tokens > 0`.
 
-**Confidence:** MEDIUM — based on sentry-sdk documentation about integration registration timing.
+**Confidence:** HIGH — Anthropic prompt caching docs on tool definitions, LangChain tool extras documentation.
 
 ---
 
-### MINOR-2: `logger.warning()` on tool errors creates Sentry log entries even when Sentry disabled — no-op overhead
+### INTEGRATION-4: 5-minute TTL makes FAIR-RAG loop iteration caching irrelevant for cross-request savings but critical within-request
 
 **What goes wrong:**
-When `SENTRY_ENABLED=false` (local dev), calling `logger.warning(...)` still invokes the Python logging framework, which if `setup_logging()` has been called, iterates over handlers. Since `sentry_sdk.init()` was not called, the Sentry logging integration handler is not attached — so no Sentry event is created. This is harmless.
+The FAIR-RAG loop (`fiqh_graph.py`) runs up to 3 iterations within a single request: decompose → retrieve → filter → assess → [refine → retrieve → filter → assess] × 2. Each LLM call in the loop uses a fresh system prompt + evidence. The 5-minute TTL (default) means:
 
-However, if a developer accidentally installs `sentry-sdk` and calls `sentry_sdk.init()` with a test DSN in their local `.env`, all tool error warnings will go to Sentry even in "dev mode". This conflates local testing noise with production signal.
+- **Within a single fiqh request**: The 3 iterations happen within seconds of each other. The system prompt is the same string in all 3 iterations. If the system prompt is cached on the first iteration, iterations 2 and 3 can read from cache. This **works** for within-request iteration savings.
+- **Across user requests**: If two different users send fiqh queries more than 5 minutes apart, the system prompt cache has expired. The first user's request writes the cache; the second user (>5 min later) misses and writes again. For low-traffic periods, cache hit rate will be low.
+- **The expensive Haiku problem**: `get_classifier_model()` (LARGE_LLM=Sonnet) is used for decomposer and SEA, and `get_generator_model()` (LARGE_LLM=Sonnet) for filter and generation. The SMALL_LLM (Haiku) is only used for query enhancement. The 4096-token minimum for Haiku means the short Haiku call sites (enhancer) cannot be cached without a substantially longer system prompt.
 
 **Prevention:**
-- The `SENTRY_ENABLED` guard in `main.py` must be evaluated before `sentry_sdk.init()` is called, not just before DSN usage. Current code gates on `if SENTRY_DSN:` — sufficient if the developer's local `.env` does not have `SENTRY_DSN`.
-- Add `SENTRY_DSN=` (empty) to `.env.example` with a comment: "Leave empty for local development — Sentry disabled when blank".
+- Use `"ttl": "1h"` for system prompts at call sites where the same system prompt is re-invoked regularly but potentially more than 5 minutes apart. The `AGENT_SYSTEM_PROMPT` (used on every non-fiqh chat request) is the best candidate for 1-hour TTL.
+- Use default 5-minute TTL for fiqh call sites where the same prompt appears in iterations 2 and 3 of the same FAIR-RAG loop — within-request savings are guaranteed regardless of TTL.
+- Do not expect cross-request savings from fiqh call sites with short, low-token system prompts unless the prompt is extended to clear the minimum token threshold.
 
-**Confidence:** MEDIUM — operational hygiene rather than a technical bug.
+**Confidence:** HIGH — TTL behavior confirmed from official Anthropic docs. Within-request iteration savings confirmed as valid.
 
 ---
 
-### MINOR-3: `ExtraFormatter` colorization in logs conflicts with JSON log parsers in production
+### INTEGRATION-5: `with_structured_output()` creates a new LLM chain that strips custom invocation parameters
 
 **What goes wrong:**
-`core/logging_config.py`'s `ExtraFormatter` prepends ANSI escape codes (`\033[92m`, `\033[93m`, etc.) to the log level name. This makes local terminal output readable but breaks structured log parsers in production (e.g., Datadog, CloudWatch Logs Insights, any grep-based log query) because the level field contains `\033[92mINFO\033[0m` rather than `INFO`.
+`modules/fiqh/sea.py` calls `model.with_structured_output(SEAResult)`. This wraps the `ChatAnthropic` instance in a new chain (specifically, it calls `.bind()` internally and adds output parsing). When you subsequently call `structured_model.invoke(messages)`, any `cache_control` parameter passed at invocation time may not propagate through the chain wrapper correctly.
 
-When Sentry's logging integration reads the log record, it reads `record.levelname` after `ExtraFormatter.format()` has been called — meaning Sentry receives the colorized string as the log level, not the plain level name. This corrupts Sentry log level filtering.
-
-**What to check:** In `ExtraFormatter.format()`, the colorization modifies `record.levelname` in place (`record.levelname = f"{color}{level}{reset}"`). The Sentry logging integration reads `record.levelname` after the formatter runs. Confirm whether Sentry uses `record.levelno` (the integer, unaffected) or `record.levelname` (the string, corrupted) for level filtering.
+More critically, if `cache_control` is applied at the `ChatAnthropic` instance level (e.g., as a constructor parameter or via `model.bind(cache_control=...)`), calling `.with_structured_output()` on top creates a new binding chain that may override or lose the `cache_control` configuration.
 
 **Prevention:**
-- Restore `record.levelname` after formatting: save the original level before colorizing, colorize for the display string, then restore: `record.levelname = level` before returning.
-- Alternatively, only colorize the output string, not the record field: format the base string first, then return `f"{color}{base}{reset}"` without touching `record.levelname`.
-- Add a `ENV=production` guard: skip colorization when not in a TTY or when `ENV != "development"`.
+- Apply `cache_control` to the message content blocks directly (structured content block format), not via invocation-level parameters, when using `with_structured_output()`. The message-level `cache_control` is part of the message structure and is passed through all chain wrappers transparently.
+- Test the SEA call site by checking `response.response_metadata` for cache tokens after adding `cache_control` to the SystemMessage content block. Verify `cache_creation_input_tokens > 0` on first call.
+- Note: `with_structured_output()` uses tool use internally (Anthropic's structured output maps to a `tool_use` call). Tool use is compatible with prompt caching per official Anthropic docs — caching works correctly when tool_use is the response format.
 
-**Confidence:** MEDIUM — based on code inspection of `ExtraFormatter`; Sentry's exact field usage in the logging handler requires verification.
+**Confidence:** MEDIUM — LangChain's chain composition behavior with `cache_control` propagation is not fully documented. The message-level approach is the safe fallback.
+
+---
+
+## LangGraph-Specific Pitfalls
+
+Mistakes caused by the interaction between LangGraph's graph execution model and Anthropic's caching semantics.
+
+---
+
+### LANGGRAPH-1: LangGraph `MemorySaver` message history grows the messages prefix on every turn, breaking static cache breakpoints
+
+**What goes wrong:**
+`ChatAgent` compiles the graph with `checkpointer=MemorySaver()` and passes `thread_id=session_id`. On each turn, LangGraph's `add_messages` reducer appends new `HumanMessage`, `AIMessage`, and `ToolMessage` objects to the messages list in `ChatState`. The `_agent_node` then constructs a fresh `messages` list including all prior messages.
+
+If `cache_control` is placed on the `SystemMessage` (the first message in the list), the cache breakpoint position is always at block 0 (the system message). As the conversation grows, the total number of content blocks before the breakpoint stays at 0, but the blocks after it grow. This is fine — the system prompt cache entry is correctly reused.
+
+However, if `cache_control` is also applied to the last `HumanMessage` (to cache the growing conversation history), the breakpoint moves each turn. The 20-block lookback window means that after ~20 messages, the previously cached block at the earlier position is no longer within lookup range, causing cold misses and repeated cache writes.
+
+**At-risk pattern in this codebase:**
+The `_build_initial_user_message` and `_build_iteration_summary` methods construct `HumanMessage` objects with per-request content (`user_query`, `working_query`, `runtime_session_id`). These are inherently dynamic and must never be the target of a `cache_control` breakpoint.
+
+**Prevention:**
+- Place `cache_control` ONLY on the `SystemMessage` (static system prompt). Do not place it on `HumanMessage` objects that contain user queries or session-specific content.
+- For multi-turn conversation history caching (where you want to cache prior turns), use automatic caching (`cache_control={"type": "ephemeral"}` passed as an invocation parameter) rather than explicit block-level breakpoints. Automatic caching moves the breakpoint forward automatically as the conversation grows, which handles the lookback window correctly.
+- The fiqh sub-graph (`fiqh_graph.py`) runs with `checkpointer=False` — no persistent message accumulation across calls. Cache breakpoints in fiqh modules are simpler: only the system prompt of each module is a candidate.
+
+**Confidence:** HIGH — Anthropic docs on 20-block lookback window. LangGraph MemorySaver message accumulation behavior confirmed from code inspection.
+
+---
+
+### LANGGRAPH-2: `_agent_node` message list reconstruction on every iteration re-inserts `SystemMessage` — must ensure structural identity
+
+**What goes wrong:**
+In `_agent_node`, on `iteration == 1`, a new `SystemMessage(content=AGENT_SYSTEM_PROMPT)` is inserted at position 0 of the message list. On subsequent iterations (`iteration > 1`), the code appends a new `HumanMessage` with an iteration summary, but does NOT re-insert the SystemMessage — the existing one from the LangGraph state carries forward.
+
+This means the exact byte sequence of the SystemMessage content must be structurally identical every time it appears in the messages list sent to the API. If the SystemMessage is constructed differently on different code paths (e.g., one path passes `content=str`, another passes `content=[{"type": "text", "text": str, "cache_control": {...}}]`), the API will see different byte sequences and cache will miss.
+
+**Subtle identity risk:**
+The `_generate_response_node` and `_generate_fiqh_response_node` methods ALSO construct a `SystemMessage(content=AGENT_SYSTEM_PROMPT)` independently. If the agent path uses a structured content block format with `cache_control` but `_generate_response_node` still uses the plain string format, those two paths have structurally different SystemMessages pointing to the same `AGENT_SYSTEM_PROMPT` string — the cache will create two separate cache entries and hit rate appears split.
+
+**Prevention:**
+- Define a single helper function (e.g., `make_cached_system_message() -> SystemMessage`) that returns the SystemMessage in the correct structured content block format with `cache_control`. All code paths that construct a SystemMessage with `AGENT_SYSTEM_PROMPT` must use this single helper.
+- Never construct the SystemMessage inline with different formats in different node methods.
+
+**Confidence:** HIGH — derived from code inspection of `_agent_node`, `_generate_response_node`, and `_check_early_exit_node`.
+
+---
+
+### LANGGRAPH-3: Fiqh sub-graph `checkpointer=False` means no cross-iteration state sharing at the graph level, but does not prevent within-request LLM cache hits
+
+**What goes wrong (misconception):**
+The comment in `fiqh_graph.py` says `checkpointer=False: stateless per-invocation; no cross-session leakage`. Some implementers may incorrectly believe that `checkpointer=False` also prevents prompt caching from working within the sub-graph's 3-iteration loop. This is a misconception.
+
+Anthropic prompt caching is entirely server-side — it has nothing to do with LangGraph's checkpointer. The checkpointer controls whether LangGraph saves `FiqhState` between separate `invoke()` calls (it does not). Prompt caching is keyed by the exact byte prefix of the messages sent to the Anthropic API in a single `invoke()` call, and the 5-minute TTL means cache entries persist on Anthropic's servers.
+
+**The actual issue:**
+The fiqh sub-graph invokes `_decompose_node` (Sonnet/Haiku) once, then loops: retrieve → filter → assess → refine → retrieve... for up to 3 iterations. Each `filter`, `assess`, and `generate` call re-creates a `ChatAnthropic` instance (from `get_generator_model()` / `get_classifier_model()`) and sends the system prompt as a fresh string. If the system prompt is structurally identical across iterations within the loop, the cache hit on iteration 2 and 3 is served from Anthropic's server-side cache (written on iteration 1). The `checkpointer=False` setting is irrelevant.
+
+**Prevention:**
+- Apply `cache_control` to system prompt content blocks in fiqh modules where the system prompt meets the minimum token threshold. Iterations 2 and 3 will get cache hits from Anthropic's server-side cache regardless of LangGraph state.
+- Do not be misled by `checkpointer=False` into thinking caching is impossible in the fiqh sub-graph.
+
+**Confidence:** HIGH — Anthropic cache is server-side, independent of LangGraph state. Confirmed from architecture analysis.
+
+---
+
+### LANGGRAPH-4: Non-deterministic tool definition ordering in `bind_tools()` can silently change the cache key
+
+**What goes wrong:**
+`ChatAgent.__init__` constructs `self.tools = [check_if_non_islamic_tool, translate_to_english_tool, ...]` as a fixed list. This is safe. However, if any future change makes the tool list dynamic (e.g., loading tools from config, filtering enabled tools based on `AgentConfig.enable_classification`), the tool list order could change between requests, changing the byte sequence of the tools prefix and causing cache misses.
+
+Similarly, the `AgentConfig` has `enable_classification`, `enable_translation`, `enable_enhancement` flags. If these flags are used to conditionally include/exclude tools in `self.tools`, a request with `enable_classification=False` would produce a different tool prefix than one with `enable_classification=True`, splitting the cache into two separate entries.
+
+**Prevention:**
+- Keep the tool list order in `ChatAgent.__init__` as a static, deterministic constant. Never sort or filter it dynamically.
+- If `enable_*` flags are implemented by changing which tools are bound, accept that each unique combination of flags creates a separate cache entry. Document this explicitly.
+- Apply `cache_control` to the last tool in the list. Any change to the list after the last tool (additions of new tools at the end) will invalidate this breakpoint. Changes before the last tool also invalidate it. Treat the tool list as append-only from a caching perspective.
+
+**Confidence:** HIGH — derived from code inspection of `AgentConfig` and tool list construction.
+
+---
+
+## Streaming + Caching Pitfalls
+
+---
+
+### STREAMING-1: Cache metrics are not reliably available from `chain.stream()` in the SSE pipeline
+
+**What goes wrong:**
+`core/pipeline_langgraph.py` uses `chain.stream()` (synchronous LangChain stream, blocking the event loop inline) for the final generation step. In Anthropic's streaming API, cache metadata (`cache_creation_input_tokens`, `cache_read_input_tokens`) is emitted in the `message_start` SSE event, not in the per-chunk `content_block_delta` events. LangChain's streaming accumulation can lose or mis-report these values.
+
+The known double-counting bug (GitHub issue #10249 in langchain-js, similar in Python) means that the accumulated `usage_metadata` from a streaming call may report cache token counts at 2× their actual values.
+
+**Consequence:**
+If cache hit/miss logging is implemented by reading cache tokens from the streaming response's final accumulated metadata, the logged values will be inaccurate. This makes the "Emit cache hit/miss counts in structured logs" requirement in v1.4 unreliable when measured through streaming paths.
+
+**Prevention:**
+- For the generation step in `core/pipeline_langgraph.py` (which uses `chain.stream()`): use `response.response_metadata.get("usage", {})` from the last stream chunk rather than `usage_metadata` from the accumulated LangChain message object, as the raw metadata is passed through more faithfully.
+- Alternatively, instrument cache metrics at the `invoke()` call sites (decomposer, filter, SEA, fiqh generator non-streaming path) rather than the streaming path. These non-streaming calls return accurate usage metadata.
+- Log a simple `cache_hit: bool` (any `cache_read_input_tokens > 0`) rather than exact token counts from streaming paths.
+
+**Confidence:** HIGH — streaming cache metadata inaccuracy confirmed from GitHub issue #32818 and #10249.
+
+---
+
+### STREAMING-2: Caching does not change the SSE event protocol or latency profile for the first streaming token
+
+**What goes wrong (misconception):**
+A common assumption is that prompt caching will reduce time-to-first-token (TTFT) for the SSE streaming path at `/chat/stream/agentic`. This is true for subsequent calls after the cache is warm. However, the first call (cache write) is 1.25× more expensive in tokens billed AND has higher latency because the API must process and store the prefix.
+
+Latency improvement from caching applies to TTFT (the time before the first streaming token arrives), not to streaming throughput (tokens per second after generation starts). The existing SSE frontend protocol and the `response_chunk` events are unaffected.
+
+**Prevention:**
+- Do not advertise caching as reducing TTFT for the first call on a cold cache. The first call per 5-minute window will have similar or slightly higher latency than without caching.
+- Measure TTFT before and after adding `cache_control` with a warm cache (second+ call within TTL) to verify the actual latency improvement for this system prompt length.
+
+**Confidence:** HIGH — caching mechanics well-documented in Anthropic docs.
+
+---
+
+## Prevention Checklist
+
+Use this checklist before shipping each call site modification in v1.4.
+
+**Before applying `cache_control` to a call site:**
+- [ ] Estimated token count of static content meets model minimum: Sonnet ≥ 2048, Haiku ≥ 4096
+- [ ] Content being marked with `cache_control` is 100% static across all requests that should share the cache
+- [ ] Using structured content blocks (`content=[{"type": "text", "text": ..., "cache_control": {...}}]`), NOT `ChatPromptTemplate.format_messages()`
+- [ ] `cache_control` is NOT placed inside `ToolMessage.content[]` array elements
+- [ ] Tool definitions use `cache_control` on the LAST tool only (marks end of tools prefix)
+- [ ] Single helper function creates the `SystemMessage` with `cache_control` — no inline duplication
+- [ ] Tool list order is static and deterministic
+
+**After applying `cache_control`:**
+- [ ] First call: `response.response_metadata["usage"]["cache_creation_input_tokens"] > 0` (cache write occurred)
+- [ ] Second identical call within TTL: `response.response_metadata["usage"]["cache_read_input_tokens"] > 0` (cache hit)
+- [ ] Neither value is 0 on both calls (both 0 = below minimum token threshold or dynamic content in prefix)
+- [ ] Structured log emits `cache_hit: bool` and `cache_creation_tokens: int` using `extra={}` style
+- [ ] Cache metric logging uses `response.response_metadata["usage"]` (raw), not `usage_metadata` (LangChain computed, potentially double-counted in streaming)
+
+**For the `ChatAgent` bind_tools path specifically:**
+- [ ] NOT using `AnthropicPromptCachingMiddleware` (incompatible with `bind_tools`)
+- [ ] Tool `cache_control` applied via `@tool(extras={...})` on the last tool or via manual tool dict construction
+- [ ] System prompt structured content block format used consistently across `_agent_node`, `_generate_response_node`, `_check_early_exit_node`, and `_generate_fiqh_response_node`
 
 ---
 
@@ -384,31 +392,28 @@ When Sentry's logging integration reads the log record, it reads `record.levelna
 
 | Phase Topic | Likely Pitfall | Mitigation |
 |-------------|---------------|------------|
-| SENTRY_ENABLED gate | Two-gate confusion (SENTRY_DSN vs. SENTRY_ENABLED) | Collapse to single AND-gate; document clearly in `.env.example` |
-| Correlation_id middleware | Scope pollution across concurrent async requests | Use `get_isolation_scope()` not bare `set_tag()` |
-| Sentry scope binding (session_id, user_id) | `send_default_pii=True` leaks full request bodies | Remove `send_default_pii=True`; add `before_send` scrubber |
-| print() → logger.* in `pipeline_langgraph.py` | Node traversal prints at INFO create quota pressure | Use `logger.debug()` for per-node traversal; INFO only for request-level events |
-| print() → logger.* in `retrieval_tools.py` | Tool errors at INFO don't create Sentry events; tool errors at ERROR spam quota | Use `logger.warning()` for recoverable tool errors |
-| print() → logger.* in exception handlers | Double-capture: logger.error(exc_info=True) + capture_exception() duplicates events | Pick one pattern; do not use both in the same except block |
-| `_experiments.enable_logs` at 2.27.0 | It is correct at this version; do NOT move to top-level yet | Add TODO comment for migration when sdk is bumped past 2.35.0 |
-| Fiqh sub-graph logging | ContextVar correlation_id not propagated into sub-graph threads | Thread correlation_id through FiqhState explicitly |
-| `ExtraFormatter` colorization | ANSI codes corrupt Sentry log level field | Restore `record.levelname` after formatting; skip colorization in production |
+| Audit call sites for caching eligibility | Missing token count verification → silent 0-hit caching | Count tokens explicitly for each call site; Sonnet≥2048, Haiku≥4096 |
+| Applying `cache_control` to ChatAgent system prompt | `ChatPromptTemplate`-style string content blocks strip `cache_control` silently | Use structured content block list format: `content=[{..., "cache_control": {...}}]` |
+| Caching tool definitions with `bind_tools` | `AnthropicPromptCachingMiddleware` incompatibility; `cache_control` on wrong tool | Apply to last tool only; use `@tool(extras={...})` or manual dict construction |
+| Fiqh module system prompts (decomposer, filter, SEA, generator) | System prompts are ~100–200 tokens; below 4096-token Haiku minimum | Do not apply `cache_control` to these call sites unless system prompts are substantially extended |
+| `with_structured_output(SEAResult)` in sea.py | Chain wrapper may strip invocation-level `cache_control` | Apply `cache_control` in message content blocks, not via invocation parameter |
+| Streaming generation step in `pipeline_langgraph.py` | Double-counted cache token metrics in `usage_metadata` | Read raw cache metrics from `response_metadata["usage"]` not `usage_metadata` |
+| Cache metric logging via Sentry `extra={}` | Inflated `input_tokens` includes cached tokens — misleading cost metrics | Log `cache_read_input_tokens` and `cache_creation_input_tokens` directly; compute `total_input_tokens = cache_read + cache_creation + input_tokens` |
+| ToolMessage results from retrieval tools | `cache_control` in `ToolMessage.content[]` blocks triggers `invalid_cache` API error | Never cache tool result content blocks; retrieved docs are dynamic anyway |
+| Multi-turn ChatAgent with MemorySaver | Cache breakpoint on dynamic HumanMessage invalidates every turn | Only cache SystemMessage; use automatic caching for conversation history growth |
+| Cold cache on first request per TTL window | Write cost 1.25× normal; higher latency for TTFT | Expected behavior; measure and communicate latency profile clearly |
 
 ---
 
 ## Sources
 
-- [sentry-sdk Python — Set Up Logs](https://docs.sentry.io/platforms/python/logs/) — enable_logs stable API in 2.35.0
-- [sentry-sdk Logging Integration](https://docs.sentry.io/platforms/python/integrations/logging/) — BreadcrumbHandler + SentryLogsHandler dual capture
-- [Manage Your Logs Quota](https://docs.sentry.io/pricing/quotas/manage-logs-quota/) — log_item data category, quota billing
-- [Scrubbing Sensitive Data — Python](https://docs.sentry.io/platforms/python/data-management/sensitive-data/) — before_send, send_default_pii, PII scrubbing
-- [Data Collected — FastAPI](https://docs.sentry.io/platforms/python/guides/fastapi/data-collected/) — what send_default_pii=True captures
-- [Scopes and Hubs for FastAPI](https://docs.sentry.io/platforms/python/guides/fastapi/enriching-events/scopes/) — get_isolation_scope(), isolation scope per request
-- [Sentry Python Scopes — async safety](https://github.com/getsentry/sentry-python/issues/147) — historical async scope issue, contextvars resolution
-- [sentry-python Issue #1468 — duplicate capture from logger + capture_exception](https://github.com/getsentry/sentry-python/issues/1468)
-- [sentry-python Issue #2328 — asyncio integration and init() timing](https://github.com/getsentry/sentry-python/issues/2328)
-- [Migrate 1.x to 2.x — configure_scope deprecated](https://docs.sentry.io/platforms/python/migration/1.x-to-2.x)
-- [LangGraph context streaming leaks across nested graphs — issue #4826](https://github.com/langchain-ai/langgraph/issues/4826)
-- [Python contextvars — asyncio task context copying](https://docs.python.org/3/library/contextvars.html)
-- [send_default_pii docs discussion](https://github.com/getsentry/sentry-docs/issues/1240)
-- [sentry-sdk CHANGELOG.md](https://github.com/getsentry/sentry-python/blob/master/CHANGELOG.md) — 2.27.0 vs 2.35.0 enable_logs promotion
+- [Anthropic Prompt Caching — Official Docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) — minimum tokens by model, cache invalidation hierarchy, TTL, tools/system/messages ordering, streaming behavior
+- [LangChain ChatAnthropic Integration](https://docs.langchain.com/oss/python/integrations/chat/anthropic) — automatic caching, explicit cache breakpoints, usage metadata access pattern
+- [AnthropicPromptCachingMiddleware](https://docs.langchain.com/oss/python/integrations/middleware/anthropic) — middleware incompatibility with `bind_tools()` confirmed
+- [GitHub #26701 — Prompt caching does not work with ChatPromptTemplate](https://github.com/langchain-ai/langchain/issues/26701) — `format_messages()` produces string content, not structured blocks
+- [GitHub #34920 — `cache_control` inside ToolMessage.content[] causes `invalid_cache` error](https://github.com/langchain-ai/langchain/issues/34920) — ToolMessage placement restriction
+- [GitHub #32818 — Usage metadata inaccurate for prompt cache reads/writes](https://github.com/langchain-ai/langchain/issues/32818) — double-counting in langchain-anthropic 0.3.x streaming
+- [GitHub #10249 (langchainjs) — cache tokens double-counted in streaming](https://github.com/langchain-ai/langchainjs/issues/10249) — cumulative SSE event double-counting mechanism
+- [GitHub #33709 — AnthropicPromptCachingMiddleware breaks model fallback](https://github.com/langchain-ai/langchain/issues/33709) — middleware fragility
+- [ProjectDiscovery Blog — How We Cut LLM Costs by 59% With Prompt Caching](https://projectdiscovery.io/blog/how-we-cut-llm-cost-with-prompt-caching) — dynamic content invalidation "7% → 74%" case study
+- [DEV Community — Anthropic Silently Dropped Prompt Cache TTL from 1 Hour to 5 Minutes](https://dev.to/whoffagents/anthropic-silently-dropped-prompt-cache-ttl-from-1-hour-to-5-minutes-16ao) — TTL change impact

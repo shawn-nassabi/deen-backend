@@ -15,6 +15,7 @@ from agents.core.chat_agent import ChatAgent
 from core import utils
 import logging
 from core.context import correlation_id as correlation_id_ctx
+from core.sentry import record_cache_metrics_breadcrumb
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,42 @@ def sse_event(event_type: str, data: dict) -> str:
     stable and its payload shapes are preserved.
     """
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+def _emit_cache_metrics_breadcrumb(final_state) -> None:
+    """Compute per-turn cache efficiency ratio and emit Sentry breadcrumb.
+
+    Phase 19 (D-05, D-06, D-08, D-09):
+      - Sum across all _agent_node iterations is read from ChatState fields
+        (cache_creation_tokens_total, cache_read_tokens_total). D-07 option b.
+      - Cold-cache (denominator 0) -> 0.0, NOT ZeroDivisionError. Required
+        explicitly by ROADMAP.md Phase 19 success criterion 2.
+      - Helper at core.sentry is a no-op when SENTRY_ENABLED is false (D-09),
+        so this caller can fire unconditionally on every done boundary.
+      - final_state may be None (line 201 path) or a dict missing the new
+        fields (defensive against legacy/test ChatState construction).
+
+    NOTE: Only _agent_node LLM calls are counted. Generator nodes
+    (_generate_response_node, _generate_fiqh_response_node) are excluded by
+    design because they run outside the iterative tool-calling loop where
+    prompt cache warm-up occurs.
+    """
+    if final_state is None or not isinstance(final_state, dict):
+        sum_creation = 0
+        sum_read = 0
+        n_iter = 0
+    else:
+        sum_creation = final_state.get("cache_creation_tokens_total", 0) or 0
+        sum_read = final_state.get("cache_read_tokens_total", 0) or 0
+        n_iter = final_state.get("iterations", 0) or 0
+    total = sum_creation + sum_read
+    ratio = (sum_read / total) if total > 0 else 0.0  # D-06 cold-cache guard
+    record_cache_metrics_breadcrumb(
+        cache_efficiency_ratio=ratio,
+        cache_read_tokens=sum_read,
+        cache_creation_tokens=sum_creation,
+        iterations=n_iter,
+    )
 
 
 async def chat_pipeline_streaming_agentic(
@@ -198,6 +235,7 @@ async def chat_pipeline_streaming_agentic(
 
             if final_state is None:
                 yield sse_event("error", {"message": "No response generated."})
+                _emit_cache_metrics_breadcrumb(final_state)
                 yield sse_event("done", {})
                 return
 
@@ -216,13 +254,14 @@ async def chat_pipeline_streaming_agentic(
                     assistant_text=assistant_text,
                 )
                 history_written = True
+                _emit_cache_metrics_breadcrumb(final_state)
                 yield sse_event("done", {})
                 return
 
             # --- Fiqh FAIR-RAG streaming path ---
             if final_state.get("fiqh_category") in VALID_FIQH_CATEGORIES:
                 from modules.fiqh.generator import (
-                    _prompt as fiqh_prompt,
+                    _build_messages as fiqh_build_messages,
                     _format_evidence,
                     _build_references_section,
                     INSUFFICIENT_WARNING,
@@ -265,12 +304,12 @@ async def chat_pipeline_streaming_agentic(
                 else:
                     # Stream fiqh answer token-by-token using fiqh-specific prompt (D-06)
                     model = chat_models.get_generator_model()
-                    chain = fiqh_prompt | model
+                    fiqh_messages = fiqh_build_messages(
+                        query=user_query,
+                        evidence=_format_evidence(fiqh_docs),
+                    )
                     response_tokens = []
-                    for chunk in chain.stream({
-                        "query": user_query,
-                        "evidence": _format_evidence(fiqh_docs),
-                    }):
+                    for chunk in model.stream(fiqh_messages):
                         token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                         if token:
                             response_tokens.append(token)
@@ -329,19 +368,16 @@ async def chat_pipeline_streaming_agentic(
 
                         references = utils.compact_format_references(all_docs)
                         chat_model = chat_models.get_generator_model()
-                        prompt = prompt_templates.generator_prompt_template
-                        chain = prompt | chat_model
                         history_messages = make_history(runtime_session_id).messages
+                        messages = prompt_templates.generator_messages(
+                            query=user_query,
+                            references=references,
+                            target_language=target_language,
+                            chat_history=history_messages,
+                        )
 
                         response_tokens = []
-                        for chunk in chain.stream(
-                            {
-                                "target_language": target_language,
-                                "query": user_query,
-                                "references": references,
-                                "chat_history": history_messages,
-                            },
-                        ):
+                        for chunk in chat_model.stream(messages):
                             token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                             if token:
                                 response_tokens.append(token)
@@ -378,6 +414,7 @@ async def chat_pipeline_streaming_agentic(
                     quran_json = utils.format_quran_references_as_json(quran_docs)
                     yield sse_event("quran_references", {"references": quran_json})
 
+            _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
         except Exception as e:
@@ -399,7 +436,8 @@ async def chat_pipeline_streaming_agentic(
                         "correlation_id": correlation_id_ctx.get(),
                         "session_id": session_id,
                     })
-            yield sse_event("error", {"message": str(e)})
+            yield sse_event("error", {"message": "An error occurred. Please try again."})
+            _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")

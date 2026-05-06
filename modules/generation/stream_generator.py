@@ -2,7 +2,7 @@ import logging
 from core import utils
 from core import chat_models
 from core import prompt_templates
-from core.memory import with_redis_history, trim_history, make_history
+from core.memory import trim_history, make_history
 from core.logging_config import setup_logging, get_memory_logger
 import asyncio
 from typing import Optional
@@ -23,17 +23,16 @@ def generate_response_stream(query: str, retrieved_docs: list, session_id: str, 
 
     chat_model = chat_models.get_generator_model()
 
-    # prompt = prompt_templates.generator_prompt_template.invoke({"query":query,"references":references})
-    prompt = prompt_templates.generator_prompt_template
-    chain = prompt | chat_model
-
-    chain_with_history = with_redis_history(chain)
+    history_messages = make_history(session_id).messages
+    messages = prompt_templates.generator_messages(
+        query=query,
+        references=references,
+        target_language=target_language,
+        chat_history=history_messages,
+    )
 
     # Stream chunks to caller
-    for chunk in chain_with_history.stream(
-        {"target_language": target_language, "query": query, "references": references},
-        config={"configurable": {"session_id": session_id}},
-    ):
+    for chunk in chat_model.stream(messages):
         # `chunk` is typically an AIMessageChunk or string
         yield getattr(chunk, "content", str(chunk) if chunk is not None else "")
 
@@ -65,15 +64,20 @@ def generate_elaboration_response_stream(selected_text: str, context_text: str, 
 
     chat_model = chat_models.get_generator_model()
 
-    prompt = prompt_templates.hikmah_elaboration_prompt_template
-    chain = prompt | chat_model
+    messages = prompt_templates.hikmah_elaboration_messages(
+        selected_text=selected_text,
+        context_text=context_text,
+        hikmah_tree_name=hikmah_tree_name,
+        lesson_name=lesson_name,
+        lesson_summary=lesson_summary,
+        references=references,
+    )
 
     # Capture AI response for memory agent (if user_id provided)
     ai_response_chunks = []
 
     # Stream chunks to caller
-    for chunk in chain.stream(
-        {"selected_text": selected_text, "context_text": context_text, "hikmah_tree_name": hikmah_tree_name, "lesson_name": lesson_name, "lesson_summary": lesson_summary, "references": references}):
+    for chunk in chat_model.stream(messages):
         # `chunk` is typically an AIMessageChunk or string
         content = getattr(chunk, "content", str(chunk) if chunk is not None else "")
         

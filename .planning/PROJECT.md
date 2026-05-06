@@ -11,6 +11,7 @@ The pipeline runs entirely on **Anthropic Claude** (claude-sonnet-4-6 / claude-h
 - v1.1 — 3 phases, 6 plans (2026-04-07): AWS → Supabase migration
 - v1.2 — 5 phases, 9 plans (2026-04-10): OpenAI → Claude + HuggingFace migration complete
 - v1.3 — 4 phases, 9 plans (2026-04-28): Sentry Deep Integration complete
+- v1.4 — 3 phases, 9 plans (2026-05-04): LLM Input Caching complete
 
 ## Core Value
 
@@ -25,8 +26,17 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Requirements
 
+### Active
+
+(v1.5 requirements — defined when next milestone starts via /gsd-new-milestone)
+
 ### Validated
 
+- ✓ Anthropic prompt caching on ChatAgent — combined tools + system prompt prefix (~5,149 tokens) cached per request; confirmed WRITE and HIT via `agent_tests/test_prompt_cache.py` — v1.4
+- ✓ `make_cached_system_message(text: str) -> SystemMessage` helper in `core/chat_models.py` — single construction point for cached system messages; content-block format preserves `cache_control` through LangChain integration — v1.4
+- ✓ All `ChatPromptTemplate` system-message patterns eliminated — 6 `modules/fiqh/` files + `core/prompt_templates.py` refactored to builder functions with `make_cached_system_message()`; `modules/enhancement/enhancer.py` explicitly excluded (Haiku 4.5 below 4,096-token threshold) — v1.4
+- ✓ Per-turn cache metrics logged at DEBUG level — `cache_hit`, `cache_creation_tokens`, `cache_read_tokens` in `_agent_node` with `correlation_id` — v1.4
+- ✓ Per-session cache efficiency Sentry breadcrumb — `cache_efficiency_ratio = cache_read / (cache_read + cache_creation)` emitted at all 4 SSE done sites; cold-cache guard prevents ZeroDivisionError — v1.4
 - ✓ FastAPI backend with SSE streaming chat endpoint (`/chat/stream/agentic`) — v1.0
 - ✓ LangGraph-based agentic pipeline with tool selection — v1.0
 - ✓ Pinecone-based dense + sparse retrieval for hadith/Quran content — v1.0
@@ -77,10 +87,6 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 - ✓ `agents/core/chat_agent.py` — all ~20 `print()` sites replaced with `logger.debug()` / `logger.error(exc_info=True)` — v1.3
 - ✓ `agents/fiqh/fiqh_graph.py` — 10 log calls converted to `extra={}` style; 3 WARNING boundaries at FAIR-RAG silent failure paths; 7 unit tests — v1.3
 
-### Active
-
-*(Next milestone — run /gsd-new-milestone to define v1.4 requirements)*
-
 ### Out of Scope
 
 - Other maraji (scholars) beyond Sistani — single-scholar focus; cross-marja conflation risk
@@ -95,18 +101,20 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 
 ## Current State
 
-**v1.3 archived (2026-04-28)** — 16 phases, 38 plans across 4 milestones.
+**v1.4 archived (2026-05-04)** — 19 phases, 47 plans across 5 milestones.
 
 - Stack: FastAPI + LangGraph + Pinecone + Redis + Supabase + Anthropic Claude + HuggingFace + Sentry
-- ~23,274 Python LOC
-- Entire codebase instrumented: API routes, pipeline, agent tools, FAIR-RAG sub-graph; zero `print()` calls
-- `correlation_id` in every log call across all layers; WARNING boundaries at all silent failure paths
+- ~24,055 Python LOC
+- Anthropic prompt caching active on ChatAgent; all module system prompts in content-block format
+- Per-session cache efficiency ratio in Sentry breadcrumbs; per-call cache metrics in DEBUG logs
 
 **Known tech debt (non-blocking):**
-- Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run in CI — runtime environment confirmation only
-- Phase 8/10 SUMMARY.md files missing `requirements-completed` frontmatter field (documentation only)
-- Phase 13-01 SUMMARY.md missing `requirements-completed` frontmatter (INFRA-01..05 were completed in 13-01 + 13-02)
+- OBS-02: measured cache hit rate requires post-deploy observation — procedure in `DEE-50-POST-DEPLOY-CHECKLIST.md`
+- Non-streaming `chat_pipeline_agentic` has no cache breadcrumb — streaming path is production path; deferred
+- `agent_tests/test_prompt_cache.py` requires live Anthropic API key — not in CI; manual run only
+- HIST-01: message history caching (second breakpoint for sessions > 10 turns) — deferred to v1.5 after hit rates confirmed
 - `ExtraFormatter` ANSI colorization not disabled for non-development environments — potential level-field corruption in Sentry if escape codes are transmitted
+- Phase 8/10 SUMMARY.md files missing `requirements-completed` frontmatter field (documentation only)
 
 ## Context
 
@@ -149,6 +157,13 @@ Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah
 | logger.error(exc_info=True) over capture_exception() | LoggingIntegration auto-captures ERROR log events — calling both creates duplicate Sentry events | ✓ `capture_exception()` removed from catch_exceptions_mw; zero duplicate events |
 | Never read incoming X-Correlation-ID header | D-03 threat: clients could inject forged IDs to manipulate Sentry trace correlation | ✓ CorrelationIdMiddleware generates server-side UUID only; client header ignored |
 | FastApiIntegration excluded from integrations list | sentry-sdk[fastapi] auto-enables FastApiIntegration; explicit inclusion causes duplicate setup | ✓ No FastApiIntegration in integrations=[...] list |
+| Combined tools+system prefix as single cache breakpoint | System prompt alone (1,427 tokens) is below 2,048-token Sonnet minimum; only clears threshold when combined with tool definitions (~5,149 tokens total) | ✓ Single `bind_tools()` + `make_cached_system_message()` prefix |
+| `convert_to_anthropic_tool()` + dict mutation for tool cache_control | `@tool(extras=...)` is not a valid API in langchain-core==0.3.84 — TypeError at import time | ✓ `retrieve_quran_tafsir_tool_cached` dict exported from retrieval_tools.py |
+| `response.response_metadata["usage"]` for cache metrics (not `usage_metadata`) | LangChain wrapper double-counts cached tokens in streaming paths (GitHub #32818) | ✓ Raw Anthropic dict used consistently; `usage_metadata` banned by grep test |
+| `SystemMessage(content=[...])` content-block format for all system prompts | `ChatPromptTemplate.format_messages()` silently strips `cache_control` (GitHub #26701) | ✓ All 10 `ChatPromptTemplate` objects replaced; zero stripping risk |
+| `modules/enhancement/enhancer.py` excluded from caching | Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens — caching would charge 1.25× write cost with zero hits | ✓ Comment in enhancer.py explaining exclusion |
+| Never put `cache_control` inside `ToolMessage.content[]` | Confirmed API error: `invalid_cache` at `messages.N.content.0.content.0.cache_control` (GitHub #34920) | ✓ Only tool definitions and system prompt carry cache_control |
+| ChatState int fields over ContextVar for cache accumulation | Matches existing `final_state.get(...)` pattern; less invasive than module-level globals | ✓ `cache_creation_tokens_total`, `cache_read_tokens_total` on ChatState |
 
 ## Constraints
 
@@ -168,4 +183,4 @@ This document evolves at phase transitions and milestone boundaries.
 **After each milestone** (via `/gsd:complete-milestone`): full review of all sections.
 
 ---
-*Last updated: 2026-04-28 after v1.3 milestone archived*
+*Last updated: 2026-05-04 after v1.4 milestone*

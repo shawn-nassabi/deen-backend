@@ -174,7 +174,7 @@ def test_streaming_pipeline_uses_runtime_history_and_appends_once(monkeypatch):
         return FakeHistory()
 
     def fake_model_fn(payload):
-        captured["history"] = payload["chat_history"]
+        captured["history"] = payload  # payload is now the chat_history list directly
         return "Generated answer"
 
     def fake_append_turn_to_runtime_history(**kwargs):
@@ -182,7 +182,10 @@ def test_streaming_pipeline_uses_runtime_history_and_appends_once(monkeypatch):
 
     monkeypatch.setattr(pipeline_langgraph, "ChatAgent", FakeAgent)
     monkeypatch.setattr("core.memory.make_history", fake_make_history)
-    monkeypatch.setattr("core.prompt_templates.generator_prompt_template", RunnableLambda(lambda x: x))
+    monkeypatch.setattr(
+        "core.prompt_templates.generator_messages",
+        lambda query, references, target_language, chat_history: chat_history,
+    )
     monkeypatch.setattr("core.chat_models.get_generator_model", lambda: RunnableLambda(fake_model_fn))
     monkeypatch.setattr(
         "services.chat_persistence_service.append_turn_to_runtime_history",

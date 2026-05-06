@@ -8,8 +8,9 @@ optimised for retrieval from Ayatollah Sistani's "Islamic Laws" (4th edition).
 from __future__ import annotations
 import json
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from core import chat_models
+from core.chat_models import make_cached_system_message
 
 
 SYSTEM_PROMPT = """You decompose a user's Islamic fiqh question into 1-4 independent, keyword-rich sub-queries for retrieval from Ayatollah Sistani's "Islamic Laws" (4th edition).
@@ -38,10 +39,11 @@ A: ["sawm fasting illness exemption qada ruling", "sawm fasting travel exemption
 Q: "Is pork haram?"
 A: ["pork haram prohibition halal food rulings"]"""
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "Query: {query}")
-])
+def _build_messages(query: str) -> list:
+    return [
+        make_cached_system_message(SYSTEM_PROMPT),
+        HumanMessage(content=f"Query: {query}"),
+    ]
 
 
 def decompose_query(query: str) -> list[str]:
@@ -54,7 +56,7 @@ def decompose_query(query: str) -> list[str]:
     """
     try:
         model = chat_models.get_classifier_model()
-        response = model.invoke(_prompt.format_messages(query=query))
+        response = model.invoke(_build_messages(query))
         content = response.content.strip()
         # Strip markdown code fences if LLM wraps output
         if content.startswith("```"):

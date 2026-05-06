@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import logging
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from core import chat_models
+from core.chat_models import make_cached_system_message
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,11 @@ IMPORTANT RULES:
 
 The chunk IDs are listed at the start of each evidence passage in format [chunk_id]."""
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "Query: {query}\n\nEvidence passages:\n{evidence}"),
-])
+def _build_messages(query: str, evidence: str) -> list:
+    return [
+        make_cached_system_message(SYSTEM_PROMPT),
+        HumanMessage(content=f"Query: {query}\n\nEvidence passages:\n{evidence}"),
+    ]
 
 
 def _format_evidence_with_ids(docs: list[dict]) -> str:
@@ -65,7 +67,7 @@ def filter_evidence(query: str, docs: list[dict]) -> list[dict]:
         return []
     try:
         model = chat_models.get_generator_model()
-        response = model.invoke(_prompt.format_messages(
+        response = model.invoke(_build_messages(
             query=query,
             evidence=_format_evidence_with_ids(docs),
         ))

@@ -4,8 +4,9 @@ These tools fetch relevant documents from the knowledge base.
 """
 
 from langchain_core.tools import tool
+from langchain_anthropic import convert_to_anthropic_tool
 from modules.retrieval import retriever
-from typing import Dict, List
+from typing import Any, Dict, List
 import logging
 from core.context import correlation_id as correlation_id_ctx
 
@@ -253,3 +254,24 @@ def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, 
             "query_used": query,
             "error": str(e)
         }
+
+
+# Pre-built Anthropic tool dict for retrieve_quran_tafsir_tool with cache_control applied.
+#
+# The langchain_core @tool decorator does not support an 'extras' parameter, so
+# cache_control cannot be set at decoration time. The correct approach per the
+# langchain-anthropic docs is to convert the tool to an Anthropic dict via
+# convert_to_anthropic_tool() and then set cache_control on the dict directly.
+#
+# This dict is the cache breakpoint for the tools prefix — Anthropic caches all
+# tool definitions up to and including the last tool (INTEGRATION-3: only the last
+# tool needs cache_control; earlier tools are included automatically in the prefix).
+#
+# Usage in chat_agent.py _create_llm_with_tools():
+#   from agents.tools.retrieval_tools import retrieve_quran_tafsir_tool_cached
+#   # Replace the bare retrieve_quran_tafsir_tool in the tools list with this dict.
+_retrieve_quran_tafsir_tool_dict: Dict[str, Any] = convert_to_anthropic_tool(
+    retrieve_quran_tafsir_tool
+)
+_retrieve_quran_tafsir_tool_dict["cache_control"] = {"type": "ephemeral"}
+retrieve_quran_tafsir_tool_cached: Dict[str, Any] = _retrieve_quran_tafsir_tool_dict

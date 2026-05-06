@@ -1,189 +1,134 @@
-# Project Research Summary
+# Research Summary: v1.4 LLM Input Caching
 
-**Project:** Deen Backend — Fiqh Agentic RAG (FAIR-RAG Pipeline)
-**Domain:** Agentic RAG for Islamic legal (fiqh) Q&A — Ayatollah Sistani's published rulings
-**Researched:** 2026-03-23
+**Project:** Deen Backend v1.4 — Anthropic Prompt Caching
+**Domain:** LLM cost optimization via Anthropic `cache_control` on an existing LangGraph + ChatAnthropic stack
+**Researched:** 2026-05-03
 **Confidence:** HIGH
 
-## Executive Summary
+---
 
-This milestone adds a FAIR-RAG (Fiqh Agentic Iterative RAG) pipeline to the existing Deen Backend. The system answers Shia Islamic legal questions grounded strictly in Ayatollah Sistani's published "Islamic Laws" (4th edition). The recommended architecture is a LangGraph sub-graph that the existing main ChatAgent routes into on fiqh-classified queries — replacing the current hard-exit with a full iterative decompose → retrieve → filter → assess → refine loop (max 3 iterations) before generating a grounded answer. This pattern is directly validated by the FARSIQA paper which achieved 97% negative rejection accuracy and 62.5% faithfulness on Islamic domain queries using dynamic LLM allocation.
+## Summary
 
-The stack is almost entirely reused: FastAPI, LangGraph 0.2.64, Pinecone, Redis, OpenAI, and the existing sentence-transformers/all-mpnet-base-v2 + TF-IDF sparse embedding pair all carry forward unchanged. The only net-new pip dependency is `pymupdf4llm` for PDF parsing. Two new Pinecone indexes (dense + sparse) are required to keep the fiqh corpus isolated from the hadith/Quran indexes. A one-time ingestion script processes the Sistani PDF into ~300-400 token chunks with chapter/section/ruling-number metadata, after which the live pipeline is fully data-driven.
+Research confirms that Anthropic prompt caching can be applied to this codebase using only the already-installed `langchain-anthropic==0.3.22` package — no new dependencies are required. The integration surface splits into two distinct zones: the **ChatAgent path** (`agents/core/chat_agent.py`) where tool definitions (~3,722 tokens) and the system prompt (~1,427 tokens) combine to a 5,149-token prefix that comfortably clears both the Sonnet 4.6 minimum (2,048 tokens) and the Haiku 4.5 minimum (4,096 tokens); and the **FAIR-RAG fiqh modules** (`modules/fiqh/*.py`) where every individual system prompt falls well below the 2,048-token Sonnet threshold when considered in isolation. The practical consequence is that the ChatAgent path — which handles every `/chat/stream/agentic` request — is the primary high-ROI caching target, while the fiqh module call sites can receive `cache_control` markers for within-request iteration savings but should not be counted on for cross-request cache hits given their short system prompts.
 
-The dominant risk is **generation hallucination**: in the Islamic domain specifically, 54.9% of pipeline errors originate in the generation step — the LLM synthesizing rulings from parametric memory rather than retrieved evidence. Mitigating this requires hard grounding constraints in the generation prompt (temperature=0, explicit "cite or omit" instruction) plus a post-generation faithfulness check. The second major risk is the existing fiqh classifier performing poorly (noted in PROJECT.md) — it must be replaced with a typed 6-category router before the FAIR-RAG pipeline can route correctly. Both risks have clear, well-researched mitigations and must be addressed in the first two phases.
+The **token minimum is the decisive gating constraint** for this milestone. Sonnet 4.6 requires 2,048 tokens and Haiku 4.5 requires 4,096 tokens before any caching occurs; below those thresholds the API silently accepts the marker, writes nothing to cache, and bills at the normal rate. All 13 module-level system prompts in `modules/fiqh/`, `modules/classification/`, `modules/enhancement/`, and `modules/translation/` fall below the Sonnet minimum when measured alone. The only call site that independently clears the threshold is the ChatAgent, where tool definitions and the system prompt must be marked together as a combined prefix. This research finding directly constrains Phase 1 scope: tool-definition caching and system-prompt caching on the ChatAgent must be implemented as a single atomic change, not in sequence.
+
+The single most important pitfall is that `ChatPromptTemplate.format_messages()` — used in all fiqh module prompts — produces a plain `str` content block that silently strips any `cache_control` dict. This is a confirmed LangChain GitHub issue (#26701) and means every `modules/fiqh/*.py` prompt must be refactored from the `ChatPromptTemplate` pattern to explicit `SystemMessage(content=[...])` content-block lists before `cache_control` will propagate to the API. The fix is mechanical but touches 11 files. A single `make_cached_system_message()` helper in `core/chat_models.py` is the recommended central point for this transformation, ensuring all call sites produce structurally identical `SystemMessage` objects — which is required for Anthropic's exact-prefix cache key to match across calls.
 
 ---
 
-## Key Findings
+## Stack Additions
 
-### Recommended Stack
+**No new packages are required.**
 
-The incremental stack is minimal. The existing FastAPI + LangGraph + Pinecone + OpenAI infrastructure handles everything; the only additions are `pymupdf4llm` (PDF parsing), two new Pinecone indexes, and a pure-Python RRF merge function (~20 lines). The existing `langchain-text-splitters`, `tiktoken`, `sentence-transformers`, and `scikit-learn` packages already cover chunking, token counting, dense embedding, and sparse embedding respectively.
+`langchain-anthropic==0.3.22` already supports `cache_control` natively on both system prompts (via structured content-block lists) and tool definitions (via `convert_to_anthropic_tool` + manual `cache_control` field injection). Cache hit/miss metrics are exposed on every response via `response.usage_metadata["input_token_details"]` and `response.response_metadata["usage"]` with no additional configuration.
 
-**Core technologies:**
-- `pymupdf4llm==0.0.17`: PDF → structured Markdown — fastest Python PDF renderer with LLM-optimized output; preserves heading hierarchy critical for chapter/section metadata
-- Custom RRF function (pure Python): merge dense + sparse Pinecone results by rank — more robust than weighted score fusion for cross-modal merging; k=60 requires no tuning
-- `langgraph==0.2.64` (existing): FAIR-RAG iterative loop as a compiled sub-graph — sub-graph composition is stable in 0.2.x; maps directly to the deterministic loop structure FAIR-RAG requires
-- Dynamic LLM allocation (config-only): `gpt-4o-mini` for routing/decomposition/SEA, `gpt-4.1` for filtering/refinement/generation — 13% cheaper than static large-model usage with higher faithfulness
-- Two new Pinecone indexes (`FIQH_DENSE_INDEX_NAME`, `FIQH_SPARSE_INDEX_NAME`): isolated fiqh corpus with chunk metadata schema including `chunk_id`, `chapter`, `section`, `page_number`, `ruling_number`
+One version bump is worth evaluating: `langchain-anthropic` from `0.3.22` to `0.3.25`. The reason is a bug fix confirmed in the 1.4.2 release notes (`fix(anthropic): restore cache_control on non-direct subclasses`) that affected `cache_control` propagation on wrapped model instances. However, upgrading carries risk: the 1.x series of `langchain-anthropic` requires `langchain>=1.0`, which is a separate major-version migration the project has not undertaken. **Do not upgrade to `langchain-anthropic>=1.0`**. Whether `0.3.25` is the maximum 0.3 series release compatible with the current `langchain==0.3.27` pin must be verified before committing.
 
-**New env vars required:** `FIQH_DENSE_INDEX_NAME`, `FIQH_SPARSE_INDEX_NAME`
-
-**Net new pip dependency: 1** (`pymupdf4llm`)
-
-### Expected Features
-
-**Must have (table stakes):**
-- Fiqh corpus ingestion pipeline — no other feature is testable without a populated Pinecone index
-- Upgraded query classifier (6-category router) — current binary classifier is known-broken; all routing depends on this
-- Negative rejection (97% target) — wrong answer is worse than no answer in a religious legal context; two-layer defense required
-- Hybrid retrieval (dense + sparse + RRF) — fiqh Arabic/Persian terminology (wudu, najasah, tayammum) is out-of-distribution for dense-only embeddings
-- Inline citations linking to source passages — trust-critical; every factual claim needs a `[n]` token + chapter/ruling references
-- Fatwa disclaimer on every ruling response (complete, partial, or uncertain) — non-negotiable; applies to all ruling responses without exception
-- Insufficient evidence partial answer + redirect — must not silently hallucinate when evidence is exhausted after 3 iterations
-- SSE status streaming for FAIR-RAG stages — pipeline takes 15-25s; UI appears frozen without intermediate events
-
-**Should have (differentiators):**
-- Structured Evidence Assessment (SEA) — core innovation enabling 97% negative rejection; three-step checklist audit is what distinguishes this from naive RAG
-- Query decomposition into independent sub-queries (1-4 per iteration) — handles multi-hop fiqh questions that require separate retrieval for base ruling + exception + conditions
-- Iterative query refinement using confirmed facts — highest-scoring FARSIQA component (4.45-4.61/5.0); eliminates re-stating the original question on subsequent passes
-- Dynamic LLM allocation — empirically validated cost/quality tradeoff; 13% cheaper, better faithfulness
-- Topic-tagged chunk metadata (chapter/section/ruling number) — enables verifiable citations and future scoped retrieval
-
-**Defer to v2+:**
-- Reasoning model routing (o1/o3 for complex inheritance): FARSIQA showed static reasoner is 11.8x more expensive with worse faithfulness — do not build
-- Multi-marja support (Khamenei, Fadlallah): religious sensitivity risk; each marja needs separate corpus and evaluation
-- Sistani.org Q&A scraping: legal/maintenance risk; add after book pipeline is validated
-- Arabic/Persian query answering: doubles embedding complexity; English-first
-- LLM-as-Judge evaluation harness: valuable but should not block pipeline; build as a separate milestone
-- Frontend or UI changes: backend-only milestone
-
-### Architecture Approach
-
-The FAIR-RAG system integrates as a LangGraph sub-graph within the existing `ChatAgent`. The main graph's `fiqh_classification` node is upgraded from a binary exit to a typed 6-category router; on `is_fiqh=True`, the main graph hands off to the compiled `FiqhAgent` sub-graph which owns the full iterative loop. The final answer flows back into `ChatState.early_exit_message`, following the existing Redis + Postgres persistence path unchanged. SSE streaming happens at the `pipeline_langgraph.py` orchestration layer — graph nodes use `llm.invoke()` (non-streaming), and the orchestrator streams the final answer token-by-token exactly as the non-fiqh path does today.
-
-**Major components:**
-
-1. `scripts/ingest_fiqh.py` (DataIngestionPipeline) — one-time script: PDF parse → paragraph-boundary chunking (300-400 tokens, ruling-number anchored) → dense + sparse embeddings → Pinecone upload with chapter/section/ruling metadata; persists fitted TF-IDF vectorizer to disk
-2. `modules/classification/fiqh_classifier.py` (FiqhClassifier) — replaces binary `classify_fiqh_query`; returns typed `FiqhCategory` enum (VALID_OBVIOUS / VALID_SMALL / VALID_LARGE / OUT_OF_SCOPE_FIQH / UNETHICAL); uses `gpt-4o-mini`
-3. `agents/fiqh/fiqh_agent.py` (FiqhAgent) — compiled `StateGraph(FiqhState)`; owns the full FAIR-RAG iterative loop; called as a black-box node from `ChatAgent`, not as a tool
-4. `modules/fiqh/retriever.py` (FiqhRetriever) — hybrid Pinecone search (dense + sparse) → RRF merge (k=60); top-3 per retriever per sub-query → RRF → top-5
-5. `modules/fiqh/sea_module.py` (SEAModule) — Structured Evidence Assessment; deconstructs query into required-findings checklist, checks each against accumulated evidence, produces confirmed_facts + gaps + sufficient verdict; uses `gpt-4o-mini`
-6. `modules/fiqh/evidence_filter.py` (FiqhEvidenceFilter) — inclusive filter using `gpt-4.1`; anchored to original user query, not sub-query; removes only clearly irrelevant documents
-7. `modules/fiqh/query_refiner.py` (QueryRefiner) — generates targeted refinement sub-queries using confirmed facts; uses `gpt-4.1`; never repeats prior queries
-8. `modules/fiqh/generator.py` (FiqhGenerator) — strictly evidence-grounded generation with inline citations, mandatory fatwa disclaimer, partial-answer fallback; uses `gpt-4.1` at temperature=0
-
-### Critical Pitfalls
-
-1. **LLM synthesizes rulings from parametric memory (54.9% of Islamic domain errors)** — hard grounding constraint in generation prompt ("cite or omit"), temperature=0, post-generation faithfulness check; this is the highest-severity failure for this product
-2. **PDF parsing breaks ruling continuity at page boundaries** — extract as continuous text first, then chunk anchored to ruling numbers; never break a ruling number boundary to hit the token target; validate chunks for mid-sentence starts
-3. **SEA declares sufficiency too early (premature loop exit)** — require SEA to cite the exact evidence sentence for each confirmed finding; prohibit logical inference for fiqh rulings; assert that multi-hop queries iterate at least 2 times in tests
-4. **Dense retrieval alone misses Arabic/Persian fiqh terminology** — hybrid retrieval (dense + sparse + RRF) must be in place from day one, not added as an optimization; do not prototype with dense-only
-5. **Existing binary fiqh classifier mis-routes edge cases** — replace with 6-category typed router before wiring FAIR-RAG; build a 50+ labeled example evaluation set covering edge cases
-6. **LangGraph sub-graph state leak between sessions** — FiqhState must be freshly instantiated per request; do not share thread ID or checkpointer with ChatState; write cross-contamination integration test
+`AnthropicPromptCachingMiddleware` is not available in `langchain-anthropic==0.3.22` (confirmed by package inspection). Do not attempt to import it. The direct `cache_control` content-block approach is the only available path on this stack.
 
 ---
 
-## Implications for Roadmap
+## Eligible Call Sites
 
-The dependency chain is strict: data must exist before retrieval can be tested, retrieval must work before the iterative loop can be built, and the loop must be correct before SSE integration makes sense. Modules with no retrieval dependency (FiqhClassifier, FiqhEvidenceFilter, SEAModule, QueryRefiner, FiqhGenerator) can be developed in parallel once the data foundation is ready.
+All LLM call sites in the codebase, their static token counts, and caching eligibility:
 
-### Phase 1: Data Foundation (Fiqh Corpus Ingestion)
+| Call Site | File | Model | Static Tokens (System) | Tool Def Tokens | Combined | Eligible? | Notes |
+|-----------|------|-------|----------------------|-----------------|----------|-----------|-------|
+| ChatAgent tool binding | `agents/core/chat_agent.py` | Sonnet 4.6 | 1,427 | 3,722 | **5,149** | **YES** | Highest ROI. Tools + system prompt must be marked together as one prefix unit. |
+| `_agent_node` system prompt | `agents/core/chat_agent.py` | Sonnet 4.6 | 1,427 | — | 1,427 | YES (with tools) | System prompt alone is below 2,048. Only eligible when tool defs are also cached in same request. |
+| `_generate_response_node` | `agents/core/chat_agent.py` | Sonnet 4.6 | 1,427 | — | 1,427 | YES (with tools) | Same `AGENT_SYSTEM_PROMPT`; must use identical `SystemMessage` format as `_agent_node` for cache hit. |
+| `_generate_fiqh_response_node` | `agents/core/chat_agent.py` | Sonnet 4.6 | ~350 | — | ~350 | Verify | Fiqh generator system prompt; below threshold alone. Mark it; confirm via runtime metadata. |
+| Fiqh classifier | `modules/fiqh/classifier.py` | Sonnet 4.6 | ~465 | — | ~465 | No (threshold) | Below 2,048. Mark anyway for future eligibility. ChatPromptTemplate must be refactored first. |
+| Fiqh decomposer | `modules/fiqh/decomposer.py` | Sonnet 4.6 | ~361 | — | ~361 | No (threshold) | Below 2,048. Same guidance. |
+| Fiqh evidence filter | `modules/fiqh/filter.py` | Sonnet 4.6 | ~184 | — | ~184 | No (threshold) | Below 2,048. Dynamic evidence block in human turn must never be marked. |
+| Fiqh SEA assessor | `modules/fiqh/sea.py` | Sonnet 4.6 | ~217 | — | ~217 | No (threshold) | Uses `with_structured_output()` — apply `cache_control` in message blocks, not via invocation kwarg. |
+| Fiqh refiner | `modules/fiqh/refiner.py` | Sonnet 4.6 | ~215 | — | ~215 | No (threshold) | Below 2,048. |
+| Fiqh generator | `modules/fiqh/generator.py` | Sonnet 4.6 | ~175 | — | ~175 | No (threshold) | Below 2,048. Dynamic retrieved evidence in human turn must not be marked. |
+| Non-Islamic classifier | `modules/classification/classifier.py` | Sonnet 4.6 | ~324 | — | ~324 | No (threshold) | Below 2,048. |
+| Non-fiqh classifier | `modules/classification/classifier.py` | Sonnet 4.6 | ~534 | — | ~534 | No (threshold) | Below 2,048. |
+| Query enhancer | `modules/enhancement/enhancer.py` | Haiku 4.5 | ~330 | — | ~330 | **No** | **Haiku minimum is 4,096 tokens.** Far below. Do not cache. |
+| Translator | `modules/translation/translator.py` | Sonnet 4.6 | ~66 | — | ~66 | No (threshold) | Far below 2,048. |
+| Legacy generator | `modules/generation/generator.py` | Sonnet 4.6 | ~1,200 | — | ~1,200 | Verify | Borderline below 2,048. Mark it; confirm `cache_creation_input_tokens > 0` at runtime. |
+| Legacy stream generator | `modules/generation/stream_generator.py` | Sonnet 4.6 | ~1,200 | — | ~1,200 | Verify | Same `generatorSystemTemplate`. Streaming path has known double-counting bug in usage metadata. |
+| Hikmah elaboration | `core/prompt_templates.py` | Sonnet 4.6 | ~1,069 | — | ~1,069 | No (threshold) | Below 2,048. Also contains injected dynamic variables — cache would miss most calls regardless. |
+| Primer generation | `core/prompt_templates.py` | Sonnet 4.6 | ~561 | — | ~561 | No (threshold) | Below 2,048. |
+| Memory consolidator | `agents/core/memory_consolidator.py` | Varies | — | — | — | Low priority | Not on hot path. Assess token count separately if needed. |
 
-**Rationale:** No other component is testable without a populated fiqh Pinecone index. PDF parsing quality and chunking strategy directly determine the ceiling for every downstream component — re-chunking requires re-embedding the entire corpus, making mistakes here the most expensive to fix. Must be solved before any embeddings are generated.
+**Conclusion:** Only the ChatAgent path (tools + system prompt combined at ~5,149 tokens) is independently cache-eligible. All module-level call sites should still receive `cache_control` markers — the API silently ignores them below threshold, and they will become eligible if prompts are expanded for quality reasons.
 
-**Delivers:** Populated `FIQH_DENSE_INDEX_NAME` and `FIQH_SPARSE_INDEX_NAME` Pinecone indexes; persisted TF-IDF vectorizer; `scripts/ingest_fiqh.py`; two new Pinecone indexes created in dashboard; `FIQH_DENSE_INDEX_NAME` + `FIQH_SPARSE_INDEX_NAME` added to `.env`
+---
 
-**Addresses:** Fiqh corpus ingestion (table stakes), hybrid retrieval prerequisite, topic-tagged chunk metadata
+## Table Stakes Features
 
-**Avoids:**
-- Pitfall 3: cross-page ruling fragments — extract continuous text, anchor chunks to ruling numbers, allow up to 500 tokens to keep rulings intact
-- Pitfall 12: missing chapter/section metadata — extract and store chapter, section, ruling_number per chunk
-- Pitfall 4 (partial): sparse index built alongside dense from the start
+**TS-01: Cache tool definitions on ChatAgent (`_create_llm_with_tools`)**
+Convert the 6 LangChain `@tool`-decorated functions to Anthropic tool dict format using `convert_to_anthropic_tool`, inject `cache_control: {"type": "ephemeral"}` on the last tool dict only, and pass the list to `bind_tools()`. Do not use `AnthropicPromptCachingMiddleware` — it is incompatible with `bind_tools()` and does not exist in `langchain-anthropic==0.3.22`.
 
-### Phase 2: Query Classification Upgrade
+**TS-02: Cache system prompt on ChatAgent (`_agent_node`, `_generate_response_node`)**
+Replace `SystemMessage(content=AGENT_SYSTEM_PROMPT)` with `make_cached_system_message(AGENT_SYSTEM_PROMPT)` at every node that constructs the agent system message. All construction sites must use the same single helper to guarantee byte-for-byte identity of the cached prefix. TS-01 and TS-02 must be implemented together — the system prompt alone (1,427 tokens) is below the 2,048-token threshold and cannot be cached without the tool definitions also in the prefix.
 
-**Rationale:** The existing binary fiqh classifier is acknowledged as underperforming in PROJECT.md and is the first gate all traffic passes through. Building the FAIR-RAG loop on a broken classifier wastes engineering effort — every end-to-end test will produce wrong routing. This can be developed in parallel with Phase 1 since it has no retrieval dependency.
+**TS-03: Verify cache hits via response metadata**
+After each ChatAgent LLM call, read `response.response_metadata["usage"]` (the raw Anthropic dict, not the LangChain-computed `usage_metadata`) and assert `cache_creation_input_tokens > 0` on the first call and `cache_read_input_tokens > 0` on the second identical call within the 5-minute TTL window. This is the only signal that the implementation is working — the API returns HTTP 200 regardless of whether caching occurred.
 
-**Delivers:** `modules/classification/fiqh_classifier.py` (FiqhClassifier) returning typed `FiqhCategory` enum; unit test suite with 50+ labeled edge-case examples; updated `ChatAgent` routing function reading category instead of boolean
+**TS-04: Emit cache hit/miss counts in structured logs**
+Log `cache_read_tokens`, `cache_creation_tokens`, and `cache_hit: bool` per ChatAgent call using the existing `logger.debug(..., extra={..., "correlation_id": ...})` pattern established in v1.3. This is an explicit PROJECT.md acceptance criterion. Use `response.response_metadata["usage"]` as the source, not `response.usage_metadata["input_token_details"]`, to avoid the known LangChain double-counting bug on streaming calls (GitHub #32818).
 
-**Addresses:** Improved query classifier + negative rejection (table stakes), routing for VALID_OBVIOUS shortcut
+---
 
-**Avoids:**
-- Pitfall 6: binary classifier boundary errors — 6-category taxonomy with labeled evaluation set
-- Prevents over-classification (expensive pipeline runs on history questions) and under-classification (fiqh questions get generic hadith answers)
+## Differentiators
 
-### Phase 3: Hybrid Retrieval Module
+**D-01: Apply `cache_control` markers to all module-level system prompts (FAIR-RAG + classifiers)**
+Even though current token counts fall below the caching threshold, marking them now costs nothing and future prompt expansions will automatically benefit. Requires refactoring all `ChatPromptTemplate.from_messages([("system", ...), ...])` patterns to `SystemMessage(content=[...])` content-block lists — `ChatPromptTemplate.format_messages()` strips `cache_control` silently (GitHub #26701). Mechanical 11-file change; skip `modules/enhancement/enhancer.py` (Haiku 4.5 minimum is 4,096 tokens).
 
-**Rationale:** With data in Pinecone and classification logic in place, retrieval is the next unblocked dependency. The FiqhRetriever is the foundation that SEA, filtering, and the iterative loop all depend on. Must use hybrid dense + sparse + RRF from the start — not prototyped with dense-only.
+**D-02: Cache efficiency ratio logging per session**
+Aggregate `cache_read_tokens / (cache_read_tokens + cache_creation_tokens)` as a session-level hit ratio in Sentry breadcrumbs. Enables detection of TTL expiry (hit rate drops toward zero) or breakpoint regressions after deploys. Low complexity once TS-04 is in place.
 
-**Delivers:** `modules/fiqh/retriever.py` (FiqhRetriever) with RRF merge (k=60); top-3 per retriever per sub-query → RRF → top-5; retrieval recall measurement for k tuning
+**D-03: Multi-turn message history prefix caching**
+Apply a second `cache_control` breakpoint to the accumulated message history up to the N-2 turn for conversations exceeding ~10 turns. Requires careful management of the 20-block lookback window constraint. Medium complexity; modest additional savings. Defer until Phase 1 hit rates are measured and proven.
 
-**Uses:** `pymupdf4llm` (already ingested), `all-mpnet-base-v2` + TF-IDF vectorizer (existing), `core/vectorstore.py` helpers (existing), custom RRF function
+---
 
-**Avoids:**
-- Pitfall 4: dense-only misses Arabic/Persian fiqh terms — sparse index built alongside dense
-- Pitfall 13: wrong k value for small corpus — start with top-3 per retriever, measure recall before committing
+## Watch Out For
 
-### Phase 4: FAIR-RAG Core Modules (Parallelizable)
+### 1. `ChatPromptTemplate.format_messages()` silently strips `cache_control` (CRITICAL)
 
-**Rationale:** FiqhEvidenceFilter, SEAModule, QueryRefiner, and FiqhGenerator all have no retrieval dependency and can be unit-tested with synthetic evidence sets. They can be built in parallel by independent work streams and integrated once FiqhRetriever (Phase 3) is complete.
+`ChatPromptTemplate.from_messages([("system", SYSTEM_PROMPT), ...]).format_messages(...)` produces a `BaseMessage` with `content` as a plain `str`. A plain string has no place to attach a `cache_control` dict — the LangChain Anthropic integration only passes `cache_control` to the API when `content` is a `list` of structured dicts. This affects every `modules/fiqh/*.py` module, both classifiers, the enhancer, and the translator. No error is raised; `cache_creation_input_tokens` and `cache_read_input_tokens` are both 0 in the response, indistinguishable from a below-threshold token count.
 
-**Delivers:**
-- `modules/fiqh/evidence_filter.py` (FiqhEvidenceFilter) — inclusive filter, anchored to original query, gpt-4.1
-- `modules/fiqh/sea_module.py` (SEAModule) — required-findings checklist with explicit textual citation per confirmed finding, gpt-4o-mini
-- `modules/fiqh/query_refiner.py` (QueryRefiner) — confirmed-facts-driven refinement, no query repetition, gpt-4.1
-- `modules/fiqh/generator.py` (FiqhGenerator) — temperature=0, hard grounding constraint, fatwa disclaimer injected as post-processing (not prompt-only), partial-answer fallback, gpt-4.1
+**Prevention:** Replace `("system", SYSTEM_PROMPT)` tuples with `SystemMessage(content=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}])` in every prompt template. Use `make_cached_system_message()` as the single construction point — confirmed working via `_format_messages` in installed `chat_models.py` lines 285-307.
 
-**Avoids:**
-- Pitfall 1: parametric memory synthesis — hard grounding constraint + faithfulness post-check in FiqhGenerator
-- Pitfall 2: premature SEA sufficiency — require textual citation per confirmed finding, prohibit inference
-- Pitfall 5: over-aggressive evidence filtering — anchor to original query, default to inclusive
-- Pitfall 10: missing disclaimer on partial answers — post-processing injection, unconditional
+### 2. Haiku 4.5 minimum is 4,096 tokens — the enhancer call site cannot be cached (CRITICAL)
 
-### Phase 5: FAIR-RAG Sub-Graph Assembly and Main Agent Integration
+`modules/enhancement/enhancer.py` uses `SMALL_LLM` (claude-haiku-4-5). Haiku 4.5's cache eligibility threshold is 4,096 tokens. The enhancer system prompt is ~330 tokens. Applying `cache_control` to this call site will produce zero cache hits while charging the 1.25× write cost on every single call — a guaranteed cost increase.
 
-**Rationale:** Once all modules are tested independently, assemble the FiqhAgent StateGraph and wire it into the main ChatAgent. This is the integration point where state management, loop control, and routing all converge. Sub-graph state isolation must be enforced here.
+**Prevention:** Do not apply `cache_control` to `modules/enhancement/enhancer.py`. Document this explicitly in code comments so future developers do not re-add it.
 
-**Delivers:** `agents/fiqh/fiqh_state.py` (FiqhState TypedDict); `agents/fiqh/fiqh_agent.py` (compiled StateGraph with iterative loop, max 3 iterations, conditional edges); updated `agents/core/chat_agent.py` with `fiqh_subgraph` node; extended `ChatState` with `fiqh_category` and `fiqh_citations`
+### 3. Silent failure — usage metadata is the only confirmation signal (CRITICAL)
 
-**Implements:** FiqhAgent sub-graph architecture; main agent routing via FiqhClassifier output
+The Anthropic API returns HTTP 200 regardless of whether caching occurred. A misplaced marker, a below-threshold token count, or dynamic content in the cached prefix all produce identical successful responses. Without checking `cache_creation_input_tokens` and `cache_read_input_tokens`, a broken implementation is invisible.
 
-**Avoids:**
-- Pitfall 9: state leak between sessions — FiqhState freshly instantiated per request, not sharing checkpointer with ChatState
-- Anti-Pattern 1: FAIR-RAG folded into free-form tool loop — compiled sub-graph with explicit edges enforces deterministic loop sequence
+**Prevention:** TS-03 is not optional. Add an explicit assertion in the test suite after implementing TS-01+TS-02: first call must produce `cache_creation > 0`, second identical call within 5 minutes must produce `cache_read > 0`. Use `response.response_metadata["usage"]` (raw Anthropic dict), not `response.usage_metadata` (LangChain wrapper, which has the double-counting bug described below).
 
-### Phase 6: SSE Streaming Integration and End-to-End Validation
+### 4. LangChain `usage_metadata` double-counts cached tokens on streaming calls (CRITICAL)
 
-**Rationale:** SSE integration is the final wiring step that makes the feature usable in the existing frontend. End-to-end tests close the loop on negative rejection accuracy, citation format, and cross-session state isolation.
+GitHub issue #32818 documents that `response.usage_metadata["input_tokens"]` includes `cache_read_input_tokens` in its total, inflating the input token count. For streaming calls using `chain.stream()` (the pattern in `core/pipeline_langgraph.py`), cache token counts in `usage_metadata.input_token_details` can be approximately 2× actual values because the Anthropic streaming API emits cache counts in both `message_start` and `message_delta` SSE events and LangChain sums them. This bug is open as of `langchain-anthropic==0.3.22`.
 
-**Delivers:** Updated `core/pipeline_langgraph.py` with `fiqh_status` event type (per FAIR-RAG stage with iteration number) and `fiqh_references` SSE event; `NODE_STATUS_MESSAGES` extended for FAIR-RAG nodes; integration test suite (`tests/test_fiqh_pipeline.py`) covering scope routing accuracy, SEA sufficiency verdicts, negative rejection rate (>95% target), citation format, and cross-session non-contamination
+**Prevention:** Always read cache metrics from `response.response_metadata["usage"]` (raw Anthropic API dict). For the streaming generation step, log a boolean `cache_hit: bool` rather than exact token counts, or read raw metadata from the last stream chunk.
 
-**Avoids:**
-- Pitfall 11: blocking SSE status events — fire-and-forget, minimal payloads (<100 bytes), no intermediate evidence dumps
-- Pitfall 14: negative rejection only tested end-to-end — unit test classifier layer separately from generation layer
+### 5. `cache_control` inside `ToolMessage` content blocks causes an API error (MODERATE)
 
-### Phase Ordering Rationale
+GitHub issue #34920 documents that placing `cache_control` inside the `content` array of a `ToolMessage` causes Anthropic's API to return `invalid_cache: cache_control is not supported at messages.N.content.0.content.0.cache_control`. This can be triggered if implementation attempts to cache retrieved document results from `retrieve_shia_documents_tool` or other tool outputs.
 
-- Phases 1 and 2 can run in parallel (ingestion and classification have no mutual dependency)
-- Phase 3 (retrieval) blocks Phase 5 (sub-graph assembly) but not Phase 4 (module development)
-- Phases 4a-4d (individual modules) can be developed in parallel once Phase 3 is unblocked
-- Phase 5 requires all of Phases 3 and 4 to be complete
-- Phase 6 requires Phase 5 to be complete
-- This ordering matches the build layer structure identified in ARCHITECTURE.md (Layers 0-7)
+**Prevention:** Never place `cache_control` inside `ToolMessage.content[]` array elements. Retrieved documents change per request — cache hits would never occur regardless. Do not cache tool result messages.
 
-### Research Flags
+---
 
-Phases likely needing deeper research during planning:
-- **Phase 1 (PDF Parsing):** `pymupdf4llm` version must be verified on PyPI at implementation time; ruling-number detection regex needs testing against the actual 4th edition PDF structure — the PDF's heading and ruling-number format may differ from assumptions
-- **Phase 3 (Retrieval / TF-IDF persistence):** TF-IDF vectorizer pickle persistence pattern needs to be validated against how the existing pipeline handles the fitted vectorizer at query time; if the existing code doesn't persist it, this is a blocker that must be resolved before ingestion
+## Recommended Phases
 
-Phases with standard patterns (skip additional research):
-- **Phase 2 (Classifier):** prompt classification with structured output is well-documented; the 6-category taxonomy is fully specified in the FAIR-RAG implementation guide
-- **Phase 4 (Core Modules):** all prompts and logic are fully specified in FAIR_RAG_Fiqh_Implementation_Guide.md with empirical backing from FARSIQA paper
-- **Phase 5 (Sub-Graph Assembly):** LangGraph StateGraph with conditional loop edges is a documented pattern; FiqhState TypedDict schema is fully specified in ARCHITECTURE.md
-- **Phase 6 (SSE Integration):** the existing SSE protocol and `NODE_STATUS_MESSAGES` pattern is understood; the change is additive
+- **Phase 1 — ChatAgent caching (TS-01 through TS-04):** Add `make_cached_system_message()` helper to `core/chat_models.py`, apply `cache_control` to tool definitions and system prompt in `agents/core/chat_agent.py` (`_create_llm_with_tools`, `_agent_node`, `_generate_response_node`), verify cache hits via `response_metadata`, and emit cache hit/miss counts using the existing `extra={}` logging pattern. This is the only call site that independently clears the token minimum and delivers guaranteed cost savings. All other phases are lower priority and depend on this being proven working first.
+
+- **Phase 2 — Module-level prompt restructuring (D-01):** Refactor all `ChatPromptTemplate.from_messages([("system", ...), ...])` patterns in `modules/fiqh/` (6 files), `modules/classification/` (1 file), `modules/translation/` (1 file), and `core/prompt_templates.py` (4 templates) to use `SystemMessage(content=[...])` content-block lists with `cache_control` markers. Skip `modules/enhancement/enhancer.py`. Token counts currently fall below threshold on all these sites — no immediate savings — but the structural change is the prerequisite for future eligibility and eliminates a silent anti-pattern from the codebase.
+
+- **Phase 3 — Metrics observability (D-02, D-03, verification):** Confirm measured cache hit rates against the theoretical 5,149-token combined prefix, add per-session cache efficiency ratio to Sentry, and update Linear ticket DEE-50 with actual token savings data. Evaluate multi-turn message history caching only after Phase 1 hit rates are confirmed at production traffic levels.
 
 ---
 
@@ -191,43 +136,40 @@ Phases with standard patterns (skip additional research):
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All reused libraries are already in production; only new dependency is `pymupdf4llm` (version needs PyPI check); LangGraph sub-graph API is MEDIUM (needs verification against 0.2.64 release notes) |
-| Features | HIGH | Feature prioritization directly from FARSIQA component-level scores and FAIR-RAG paper; PROJECT.md constraints confirm anti-feature decisions |
-| Architecture | HIGH | Based on direct codebase analysis of `chat_agent.py`, `pipeline_langgraph.py`, `chat_state.py`; all component boundaries and data flow verified against existing patterns |
-| Pitfalls | MEDIUM-HIGH | Error distributions from FARSIQA (122 samples) and FAIR-RAG (200 samples) are summarized via implementation guide, not direct paper access; prevention strategies are HIGH confidence from direct codebase knowledge |
+| Stack | HIGH | All claims verified against installed `langchain_anthropic==0.3.22` source code. No new packages needed is confirmed by direct package inspection. Version bump risk noted but manageable. |
+| Features | HIGH | Token counts from FEATURES.md call site audit; eligibility decisions follow directly from official Anthropic docs (model-specific minimums confirmed). |
+| Architecture | HIGH | Integration strategy verified against installed package source and repo code for `agents/core/chat_agent.py`, `modules/fiqh/*.py`, `core/chat_models.py`. |
+| Pitfalls | HIGH | All five critical pitfalls backed by confirmed GitHub issues (#26701, #34920, #32818) and official Anthropic documentation. |
 
 **Overall confidence: HIGH**
 
 ### Gaps to Address
 
-- **TF-IDF vectorizer persistence:** The existing pipeline uses TF-IDF for sparse embeddings, but it is unclear whether the fitted vectorizer is currently persisted to disk for query-time use. This must be audited in `modules/embedding/embedder.py` before the ingestion script is designed — if the pattern does not exist, it must be built.
-- **LangGraph 0.2.64 sub-graph API:** Sub-graph composition (calling a compiled sub-graph from within a parent graph node) was in active development in late 2024. The exact `.invoke()` vs `.astream()` API for nested graphs in version 0.2.64 should be verified against release notes before Phase 5 implementation begins.
-- **`pymupdf4llm` version on PyPI:** Version 0.0.17 was current at knowledge cutoff (August 2025). Verify the latest version and any breaking changes before pinning in `requirements.txt`.
-- **Sistani PDF ruling-number format:** The chunking strategy assumes numbered rulings (e.g., "Issue 712:") can be detected via pattern matching. The actual format in the 4th edition PDF should be confirmed before the ingestion script's regex anchoring logic is written.
+- **Exact token counts must be measured before claiming eligibility:** The ~5,149 combined prefix estimate is from the research agent, not a `tiktoken` measurement. If the actual combined count falls below 2,048 tokens, no caching occurs. Measure with `tiktoken` or the Anthropic token counter as the first implementation step.
+- **`langchain-anthropic` version bump compatibility:** Whether `0.3.25` is safe to pin alongside `langchain==0.3.27` requires a dependency check. Leave at `0.3.22` until confirmed; the 0.3.22 implementation path is fully validated.
+- **Legacy generator token count:** The `generatorSystemTemplate` is estimated at ~1,200 tokens — borderline below the 2,048-token minimum. Measure precisely; if it clears the threshold, it becomes the second-highest-ROI caching target after the ChatAgent.
+- **Haiku 4.5 minimum re-verification:** The 4,096-token minimum for Haiku 4.5 is consistent across both STACK.md and FEATURES.md research. Verify against current Anthropic docs at implementation time — model-specific minimums have changed between Claude generations.
 
 ---
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- `documentation/fiqh_related_docs/FAIR_RAG_Fiqh_Implementation_Guide.md` — FAIR-RAG and FARSIQA synthesis; all pipeline design decisions
-- `agents/core/chat_agent.py` — existing LangGraph graph structure, fiqh early-exit node, tool registration
-- `core/pipeline_langgraph.py` — SSE event protocol, streaming orchestration, NODE_STATUS_MESSAGES
-- `agents/state/chat_state.py` — ChatState TypedDict; extension points
-- `modules/embedding/embedder.py` — confirmed all-mpnet-base-v2 and TF-IDF usage
-- `modules/reranking/reranker.py` — confirmed weighted score merge (not RRF) in existing pipeline
-- `.planning/PROJECT.md` — milestone scope, existing classifier weakness noted
-- `.planning/codebase/STACK.md` — existing stack audit
-- `requirements.txt` — pinned versions of all installed packages
+- Installed `langchain_anthropic==0.3.22` source (`chat_models.py`) — `cache_control` handling in `_get_request_payload` (lines 1579-1599), `_format_messages` (lines 285-307), `_create_usage_metadata` (lines 2588-2628), tool caching example (lines 1952-1966)
+- [Anthropic prompt caching official docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) — minimum tokens by model, cache hierarchy, TTL, pricing
+- [LangChain ChatAnthropic integration docs](https://docs.langchain.com/oss/python/integrations/chat/anthropic) — `cache_control` content-block format
+- `agents/core/chat_agent.py`, `modules/fiqh/*.py`, `core/chat_models.py`, `core/prompt_templates.py` (repo source) — verified call sites, message construction patterns, tool binding
 
 ### Secondary (MEDIUM confidence)
-- FAIR-RAG paper (via implementation guide) — 200-sample error distribution (32.5% retrieval, 31% generation); RRF k=60 configuration; SEA three-step process
-- FARSIQA paper (via implementation guide) — 122-sample Islamic domain error distribution (54.9% generation, 27.9% retrieval); dynamic LLM allocation Table 6; component-level quality scores; 97% negative rejection
+- [GitHub #26701](https://github.com/langchain-ai/langchain/issues/26701) — `ChatPromptTemplate.format_messages()` strips `cache_control` silently; confirmed with reproduction
+- [GitHub #34920](https://github.com/langchain-ai/langchain/issues/34920) — `cache_control` inside `ToolMessage.content[]` causes `invalid_cache` API error; confirmed with reproduction
+- [GitHub #32818](https://github.com/langchain-ai/langchain/issues/32818) — `usage_metadata` double-counts cached tokens in streaming; open as of `langchain-anthropic==0.3.22`
+- [langchain-anthropic PyPI release history](https://pypi.org/project/langchain-anthropic/) — `0.3.25` as latest 0.3.x series
+- [AnthropicPromptCachingMiddleware docs](https://docs.langchain.com/oss/python/integrations/middleware/anthropic) — confirmed incompatible with `bind_tools()`
 
 ### Tertiary (LOW confidence)
-- LangGraph 0.2.64 sub-graph composition API — needs verification against official release notes before Phase 5 implementation
-- `pymupdf4llm` v0.0.17 — version currency needs PyPI check; capabilities are HIGH confidence, version pinning is LOW
+- langchain-anthropic 1.4.2 release note (`fix(anthropic): restore cache_control on non-direct subclasses`) — reason for considering `0.3.25` upgrade; not independently verified
 
 ---
-*Research completed: 2026-03-23*
+*Research completed: 2026-05-03*
 *Ready for roadmap: yes*
