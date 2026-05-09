@@ -1,0 +1,109 @@
+name: Deploy main → dev (Hetzner)
+
+# DEE-47 Phase 1: manual deployment of any git ref to the dev Hetzner box.
+# Trigger is workflow_dispatch only (cost + safety per DEE-47 plan); push
+# triggers can be added later as a Phase 3 follow-up. Runs on the
+# self-hosted runner registered under the `dev-deploy` label.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (default: main)"
+        required: false
+        default: main
+      no_cache:
+        description: "Force docker build --no-cache"
+        required: false
+        type: boolean
+        default: false
+
+# Serialise dev deploys; never queue more than one. cancel-in-progress=false
+# so a deploy that's already restarting the container isn't yanked
+# mid-restart by an accidental second click.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, dev-deploy]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Write .env from GH Secrets
+        # umask 077 ensures the .env is created with mode 600 (owner-only
+        # read/write). Subsequent docker compose up bind-mounts it into the
+        # container via env_file in docker-compose.yml — no secret values
+        # appear in logs because every ${{ secrets.* }} is auto-redacted by
+        # GitHub Actions.
+        run: |
+          umask 077
+          cat > .env <<EOF
+          ENV=${{ secrets.ENV }}
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          LARGE_LLM=${{ secrets.LARGE_LLM }}
+          SMALL_LLM=${{ secrets.SMALL_LLM }}
+          PINECONE_API_KEY=${{ secrets.PINECONE_API_KEY }}
+          DEEN_DENSE_INDEX_NAME=${{ secrets.DEEN_DENSE_INDEX_NAME }}
+          DEEN_SPARSE_INDEX_NAME=${{ secrets.DEEN_SPARSE_INDEX_NAME }}
+          QURAN_DENSE_INDEX_NAME=${{ secrets.QURAN_DENSE_INDEX_NAME }}
+          DEEN_FIQH_DENSE_INDEX_NAME=${{ secrets.DEEN_FIQH_DENSE_INDEX_NAME }}
+          DEEN_FIQH_SPARSE_INDEX_NAME=${{ secrets.DEEN_FIQH_SPARSE_INDEX_NAME }}
+          REDIS_URL=${{ secrets.REDIS_URL }}
+          REDIS_KEY_PREFIX=${{ secrets.REDIS_KEY_PREFIX }}
+          REDIS_TTL_SECONDS=${{ secrets.REDIS_TTL_SECONDS }}
+          REDIS_MAX_MESSAGES=${{ secrets.REDIS_MAX_MESSAGES }}
+          DATABASE_URL=${{ secrets.DATABASE_URL }}
+          ASYNC_DATABASE_URL=${{ secrets.ASYNC_DATABASE_URL }}
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_PORT=${{ secrets.DB_PORT }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          SENTRY_ENABLED=${{ secrets.SENTRY_ENABLED }}
+          CORS_ALLOW_ORIGINS=${{ secrets.CORS_ALLOW_ORIGINS }}
+          EOF
+
+      - name: Build image
+        run: |
+          if [ "${{ inputs.no_cache }}" = "true" ]; then
+            docker compose build --no-cache
+          else
+            docker compose build
+          fi
+
+      - name: Restart service
+        run: |
+          docker compose down
+          docker compose up -d
+
+      - name: Wait for /health (60s budget)
+        # Polls the in-container health endpoint via the host's loopback
+        # because docker-compose.yml maps :8000 (Caddy fronts HTTPS but is
+        # in a separate container). 30 attempts × 2s = 60s budget covers
+        # cold-start of the sentence-transformers model.
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+              echo "✓ Health OK after ${i}×2s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "✗ Health check timed out"
+          docker logs --tail=200 deen-backend
+          exit 1
+
+      - name: Print container status
+        if: always()
+        run: docker ps --filter name=deen-backend
