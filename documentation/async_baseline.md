@@ -272,3 +272,103 @@ A speedup of 1.0 means full serialisation; the Phase 7 gate requires
 }
 ```
 
+## phase-5 async-fiqh-and-routes (DEE-44) — 2026-05-09T05:28:10+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.929**
+- p50_s / p95_s: 0.9172 / 0.9282
+- throughput_rps: 10.7645
+- speedup_vs_serial: **8.0733**
+
+```json
+{
+  "label": "phase-5 async-fiqh-and-routes (DEE-44)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.929,
+  "p50_s": 0.9172,
+  "p95_s": 0.9282,
+  "min_s": 0.9025,
+  "max_s": 0.9282,
+  "mean_s": 0.9156,
+  "throughput_rps": 10.7645,
+  "speedup_vs_serial": 8.0733,
+  "timestamp": "2026-05-09T05:28:10+00:00"
+}
+```
+
+## phase-7 verification (DEE-46) — 2026-05-09T05:30:56+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.9369**
+- p50_s / p95_s: 0.9227 / 0.9363
+- throughput_rps: 10.6732
+- speedup_vs_serial: **8.0049**
+
+```json
+{
+  "label": "phase-7 verification (DEE-46)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.9369,
+  "p50_s": 0.9227,
+  "p95_s": 0.9363,
+  "min_s": 0.9063,
+  "max_s": 0.9363,
+  "mean_s": 0.9209,
+  "throughput_rps": 10.6732,
+  "speedup_vs_serial": 8.0049,
+  "timestamp": "2026-05-09T05:30:56+00:00",
+  "loadtest_runtime_s": 15.4907
+}
+```
+
+## phase-5 async-fiqh-and-routes (DEE-44) — 2026-05-09T05:36:22+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **0.9413**
+- p50_s / p95_s: 0.9269 / 0.9405
+- throughput_rps: 10.6236
+- speedup_vs_serial: **7.9677**
+
+```json
+{
+  "label": "phase-5 async-fiqh-and-routes (DEE-44)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 0.9413,
+  "p50_s": 0.9269,
+  "p95_s": 0.9405,
+  "min_s": 0.9129,
+  "max_s": 0.9405,
+  "mean_s": 0.9259,
+  "throughput_rps": 10.6236,
+  "speedup_vs_serial": 7.9677,
+  "timestamp": "2026-05-09T05:36:22+00:00"
+}
+```
+

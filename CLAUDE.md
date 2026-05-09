@@ -17,14 +17,18 @@ uvicorn main:app --reload
 uvicorn main:app --port 8080 --reload --host 0.0.0.0
 
 # Tests
-pytest tests -q                             # primary test suite
-pytest tests/db -q                          # DB compatibility (requires DATABASE_URL)
+pytest tests -q                             # primary suite (skips tests/db and -m real_llm by default)
+pytest tests/db -q                          # DB compatibility (requires reachable Postgres)
 pytest tests/test_fiqh_*.py -q              # FAIR-RAG fiqh subsystem tests
 python agent_tests/test_memory_agent.py     # memory agent integration
 pytest tests/test_agentic_streaming_sse.py -v -s
+pytest tests/ -m real_llm -q                # opt-in: hits real Anthropic + Pinecone + Supabase
+python scripts/loadtest_agentic.py --n 10   # in-process concurrency loadtest
 
-# Fiqh corpus ingestion (one-shot, populates Pinecone fiqh indices)
-python scripts/ingest_fiqh.py
+# Fiqh corpus ingestion / encoder regeneration
+python scripts/ingest_fiqh.py                  # full: parse PDF + embed + upsert to Pinecone (one-time)
+python scripts/ingest_fiqh.py --encoder-only   # local-only: regenerate data/fiqh_bm25_encoder.json
+                                                # (gitignored; required for fiqh queries to work locally)
 
 # Docker
 docker compose build --no-cache && docker compose up -d
@@ -100,16 +104,19 @@ Fiqh subgraph nodes (`_decompose_node`, `_retrieve_node`, etc. in `agents/fiqh/f
 
 Corpus ingestion lives in `scripts/ingest_fiqh.py` and populates separate Pinecone indices (do not reuse the main hadith/Quran indices). Fiqh tests are `tests/test_fiqh_*.py` covering each stage individually plus integration (`test_fiqh_integration.py`) and graph-level logging (`test_fiqh_graph_logging.py`). Honour the religious-sensitivity constraints from the Project section: never issue fatwas, always include disclaimers, refuse rather than speculate.
 
-### Async architecture (DEE-36)
+**Local DX gotcha (DEE-46):** `data/fiqh_bm25_encoder.json` is **gitignored** and regenerated at Docker image build time by `Dockerfile`'s `RUN python scripts/ingest_fiqh.py --encoder-only`. Fresh clones running `uvicorn main:app --reload` directly will silently fall back to refusal answers for fiqh queries because sparse retrieval throws inside `_get_bm25_encoder`. `main.py`'s lifespan hook now logs a WARNING with the remediation command (`python scripts/ingest_fiqh.py --encoder-only`) when the file is missing.
 
-The streaming hot path is end-to-end async; see `documentation/async_baseline.md` for per-phase concurrency snapshots (3.45s → 0.57s wall-clock at N=10).
+### Async architecture (DEE-36 — closed)
+
+The streaming hot path is end-to-end async; see `documentation/async_baseline.md` for per-phase concurrency snapshots (phase-0 → phase-7 = ≥3× p95 improvement at N=10, deterministic stub-driven).
 
 - `core/pipeline_langgraph.py` uses `chain.astream()` end-to-end (DEE-40).
 - ChatAgent nodes and all 9 `@tool` functions are `async def` (DEE-41).
 - LLM modules + Pinecone retrieval are natively async — `aclassify_*`, `aenhance_query`, `atranslate_*`, `PineconeAsyncio.asimilarity_search_with_score` (DEE-42).
 - Redis chat history uses `AsyncRedisChatMessageHistory` from `core/memory.py` (DEE-43).
 - Fiqh subgraph and `/references`, `/hikmah/elaborate` routes are natively async (DEE-44).
-- Async DB (`asyncpg` + `AsyncSession`) is **not yet shipped** — DEE-45 in backlog. `db/session.py` (sync) is still the active path.
+- Chat persistence runs on `asyncpg` + `AsyncSession` (DEE-45). The chat router uses `Depends(get_db_async)` from `db/async_session.py`; other routers (primer, lessons, hikmah, etc.) stay on sync `Depends(get_db)` and migrate in follow-up sub-issues.
+- Final automated gate suite landed in DEE-46: concurrency p95 ≥3× phase-0 baseline (`tests/test_async_concurrency_full.py`), SSE event-order snapshots via syrupy (`tests/test_sse_event_order_snapshot.py`), per-coroutine Sentry scope isolation under asyncio (`tests/test_sentry_async_propagation.py`), plus the opt-in real-Anthropic perf suite (`tests/test_real_llm_perf.py`, marker `-m real_llm`).
 
 ### Memory system
 
@@ -387,7 +394,7 @@ An enhancement to the Deen Islamic education platform's chatbot agent that enabl
 - **Agentic pipeline streaming** (`chat_pipeline_streaming_agentic`) is fully async: `async for event in agent.astream(...)`, returns `StreamingResponse` with an `AsyncGenerator`.
 - **LangGraph graph execution** uses `compiled_graph.astream()` (async) and `compiled_graph.ainvoke()` (async). The legacy sync `compiled_graph.invoke()` path is retained for the legacy pipeline only.
 - **LLM calls inside graph nodes** are async (`.ainvoke()`, `.astream()`). The streaming token loop in `pipeline_langgraph.py` uses `chain.astream()` inside an `async def` generator (DEE-40).
-- **Database access** uses synchronous SQLAlchemy (`db/session.py`, `psycopg2` driver). Async DB via `asyncpg` is configured (`ASYNC_DATABASE_URL`) but not yet actively used in routers — DEE-45 will migrate `chat_persistence_service.py` first.
+- **Database access** is split (DEE-45): the chat router runs on `asyncpg` + `AsyncSession` via `db/async_session.py` (`Depends(get_db_async)`); all other routers still use sync SQLAlchemy via `db/session.py` (`Depends(get_db)`, `psycopg2` driver). Both engines target the same Supabase database — they're built from the same `db/config.py` settings, just different drivers. Per-router migrations to async DB are tracked in DEE-45 follow-up sub-issues.
 - **Redis** is accessed asynchronously via the in-house `AsyncRedisChatMessageHistory` wrapper backed by `redis.asyncio` (DEE-43); the sync `RedisChatMessageHistory` from `langchain_community` is kept only for legacy code paths.
 ## Early Exit Conditions
 ## Error Handling

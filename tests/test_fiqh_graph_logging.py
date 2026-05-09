@@ -29,22 +29,25 @@ LOGGER_NAME = "agents.fiqh.fiqh_graph"
 # FIQH-02: Zero-doc retrieval WARNING
 # --------------------------------------------------------------------------- #
 
-def test_fiqh02_warning_on_zero_docs(caplog):
+@pytest.mark.asyncio
+async def test_fiqh02_warning_on_zero_docs(caplog):
     """WARNING logged when retrieve_fiqh_documents returns empty list."""
     state = {
         "query": "test query", "iteration": 0, "accumulated_docs": [],
         "prior_queries": ["test query"], "sea_result": None,
         "verdict": "INSUFFICIENT", "status_events": [],
     }
-    with patch("modules.fiqh.retriever.retrieve_fiqh_documents", return_value=[]):
-        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
-            _retrieve_node(state)
+    with patch("modules.fiqh.retriever.aretrieve_fiqh_documents", return_value=[]):
+        with patch("modules.fiqh.retriever.retrieve_fiqh_documents", return_value=[]):
+            with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+                await _retrieve_node(state)
     warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("zero documents" in m for m in warning_msgs), \
         f"Expected 'zero documents' WARNING, got: {warning_msgs}"
 
 
-def test_fiqh02_no_warning_when_docs_returned(caplog):
+@pytest.mark.asyncio
+async def test_fiqh02_no_warning_when_docs_returned(caplog):
     """No WARNING logged when retrieve_fiqh_documents returns documents."""
     state = {
         "query": "test query", "iteration": 0, "accumulated_docs": [],
@@ -52,9 +55,10 @@ def test_fiqh02_no_warning_when_docs_returned(caplog):
         "verdict": "INSUFFICIENT", "status_events": [],
     }
     mock_docs = [{"chunk_id": "c1", "text": "some fiqh ruling"}]
-    with patch("modules.fiqh.retriever.retrieve_fiqh_documents", return_value=mock_docs):
-        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
-            _retrieve_node(state)
+    with patch("modules.fiqh.retriever.aretrieve_fiqh_documents", return_value=mock_docs):
+        with patch("modules.fiqh.retriever.retrieve_fiqh_documents", return_value=mock_docs):
+            with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+                await _retrieve_node(state)
     warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert not any("zero documents" in m for m in warning_msgs), \
         f"Unexpected 'zero documents' WARNING: {warning_msgs}"
@@ -64,7 +68,8 @@ def test_fiqh02_no_warning_when_docs_returned(caplog):
 # FIQH-03: Filter drops all docs WARNING
 # --------------------------------------------------------------------------- #
 
-def test_fiqh03_warning_on_empty_filter(caplog):
+@pytest.mark.asyncio
+async def test_fiqh03_warning_on_empty_filter(caplog):
     """WARNING logged when filter_evidence returns empty list."""
     state = {
         "query": "test query", "iteration": 1,
@@ -72,15 +77,17 @@ def test_fiqh03_warning_on_empty_filter(caplog):
         "prior_queries": ["test query"], "sea_result": None,
         "verdict": "INSUFFICIENT", "status_events": [],
     }
-    with patch("modules.fiqh.filter.filter_evidence", return_value=[]):
-        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
-            _filter_node(state)
+    with patch("modules.fiqh.filter.afilter_evidence", return_value=[]):
+        with patch("modules.fiqh.filter.filter_evidence", return_value=[]):
+            with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+                await _filter_node(state)
     warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("filter removed all documents" in m for m in warning_msgs), \
         f"Expected 'filter removed all documents' WARNING, got: {warning_msgs}"
 
 
-def test_fiqh03_no_warning_when_docs_pass(caplog):
+@pytest.mark.asyncio
+async def test_fiqh03_no_warning_when_docs_pass(caplog):
     """No WARNING logged when filter_evidence returns documents."""
     state = {
         "query": "test query", "iteration": 1,
@@ -89,9 +96,10 @@ def test_fiqh03_no_warning_when_docs_pass(caplog):
         "verdict": "INSUFFICIENT", "status_events": [],
     }
     filtered_docs = [{"chunk_id": "c1", "text": "doc"}]
-    with patch("modules.fiqh.filter.filter_evidence", return_value=filtered_docs):
-        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
-            _filter_node(state)
+    with patch("modules.fiqh.filter.afilter_evidence", return_value=filtered_docs):
+        with patch("modules.fiqh.filter.filter_evidence", return_value=filtered_docs):
+            with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+                await _filter_node(state)
     warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert not any("filter removed all documents" in m for m in warning_msgs), \
         f"Unexpected filter WARNING: {warning_msgs}"
