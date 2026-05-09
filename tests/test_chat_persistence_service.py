@@ -1,21 +1,25 @@
-import asyncio
 import sys
 from pathlib import Path
+from typing import AsyncIterator
+
+import pytest
+from fastapi.responses import StreamingResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from fastapi.responses import StreamingResponse
-from sqlalchemy import create_engine
-from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker
 
 from services import chat_persistence_service
 
 
-def _make_db_session():
-    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    with engine.begin() as conn:
-        conn.execute(
+async def _make_db_session() -> AsyncSession:
+    """Create a fresh in-memory aiosqlite database with chat tables and return
+    an AsyncSession bound to it. Each call gets its own engine so tests are
+    isolated."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+
+    async with engine.begin() as conn:
+        await conn.execute(
             text(
                 """
                 CREATE TABLE chat_sessions (
@@ -31,7 +35,7 @@ def _make_db_session():
                 """
             )
         )
-        conn.execute(
+        await conn.execute(
             text(
                 """
                 CREATE TABLE chat_messages (
@@ -45,7 +49,14 @@ def _make_db_session():
                 """
             )
         )
-    session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+    session_local = async_sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
     return session_local()
 
 
@@ -109,45 +120,49 @@ def test_extract_answer_text_from_agentic_sse_with_error_only_returns_empty():
     assert cleaned == ""
 
 
-def test_persist_and_query_saved_chat():
-    db = _make_db_session()
+@pytest.mark.asyncio
+async def test_persist_and_query_saved_chat():
+    db = await _make_db_session()
 
-    chat_persistence_service.persist_user_message(
-        db,
-        user_id="user-1",
-        session_id="thread-1",
-        user_query="What is tawhid?",
-    )
-    chat_persistence_service.persist_assistant_message(
-        db,
-        user_id="user-1",
-        session_id="thread-1",
-        assistant_text="Tawhid means the oneness of Allah.",
-    )
+    try:
+        await chat_persistence_service.persist_user_message(
+            db,
+            user_id="user-1",
+            session_id="thread-1",
+            user_query="What is tawhid?",
+        )
+        await chat_persistence_service.persist_assistant_message(
+            db,
+            user_id="user-1",
+            session_id="thread-1",
+            assistant_text="Tawhid means the oneness of Allah.",
+        )
 
-    items, total = chat_persistence_service.list_sessions(
-        db,
-        user_id="user-1",
-        limit=20,
-        offset=0,
-    )
-    assert total == 1
-    assert len(items) == 1
-    assert items[0]["session_id"] == "thread-1"
-    assert items[0]["title"] == "What is tawhid?"
-    assert items[0]["message_count"] == 2
+        items, total = await chat_persistence_service.list_sessions(
+            db,
+            user_id="user-1",
+            limit=20,
+            offset=0,
+        )
+        assert total == 1
+        assert len(items) == 1
+        assert items[0]["session_id"] == "thread-1"
+        assert items[0]["title"] == "What is tawhid?"
+        assert items[0]["message_count"] == 2
 
-    detail = chat_persistence_service.get_session_with_messages(
-        db,
-        user_id="user-1",
-        session_id="thread-1",
-        limit=100,
-        offset=0,
-    )
-    assert detail is not None
-    assert detail["session_id"] == "thread-1"
-    assert detail["total_messages"] == 2
-    assert [message["role"] for message in detail["messages"]] == ["user", "assistant"]
+        detail = await chat_persistence_service.get_session_with_messages(
+            db,
+            user_id="user-1",
+            session_id="thread-1",
+            limit=100,
+            offset=0,
+        )
+        assert detail is not None
+        assert detail["session_id"] == "thread-1"
+        assert detail["total_messages"] == 2
+        assert [message["role"] for message in detail["messages"]] == ["user", "assistant"]
+    finally:
+        await db.close()
 
 
 async def _collect_streaming_response(response: StreamingResponse) -> str:
@@ -159,83 +174,90 @@ async def _collect_streaming_response(response: StreamingResponse) -> str:
     return "".join(chunks)
 
 
-def test_wrap_streaming_response_for_persistence_saves_only_agentic_answer_text():
-    db = _make_db_session()
-    chat_persistence_service.persist_user_message(
-        db,
-        user_id="user-1",
-        session_id="thread-2",
-        user_query="Tell me about patience",
-    )
-
-    async def body():
-        yield 'event: status\ndata: {"step":"agent","message":"Agent thinking..."}\n\n'
-        yield 'event: response_chunk\ndata: {"token":"Patience"}\n\n'
-        yield 'event: response_chunk\ndata: {"token":" is beautiful."}\n\n'
-        yield 'event: response_end\ndata: {}\n\n'
-        yield 'event: done\ndata: {}\n\n'
-
-    callback_values = []
-    response = StreamingResponse(body(), media_type="text/event-stream")
-    wrapped = chat_persistence_service.wrap_streaming_response_for_persistence(
-        response=response,
-        db=db,
-        user_id="user-1",
-        session_id="thread-2",
-        on_assistant_message_saved=callback_values.append,
-    )
-
-    streamed = asyncio.run(_collect_streaming_response(wrapped))
-    assert 'event: response_chunk' in streamed
-
-    detail = chat_persistence_service.get_session_with_messages(
-        db,
-        user_id="user-1",
-        session_id="thread-2",
-        limit=100,
-        offset=0,
-    )
-    assert detail is not None
-    assert detail["messages"][-1]["role"] == "assistant"
-    assert detail["messages"][-1]["content"] == "Patience is beautiful."
-    assert callback_values == ["Patience is beautiful."]
-
-
-def test_wrap_streaming_response_for_persistence_saves_partial_agentic_answer_on_error():
-    db = _make_db_session()
-    chat_persistence_service.persist_user_message(
-        db,
-        user_id="user-1",
-        session_id="thread-3",
-        user_query="Tell me about patience",
-    )
-
-    async def body():
-        yield 'event: status\ndata: {"step":"agent","message":"Agent thinking..."}\n\n'
-        yield 'event: response_chunk\ndata: {"token":"Partial"}\n\n'
-        yield 'event: response_chunk\ndata: {"token":" answer"}\n\n'
-        raise RuntimeError("stream interrupted")
-
-    response = StreamingResponse(body(), media_type="text/event-stream")
-    wrapped = chat_persistence_service.wrap_streaming_response_for_persistence(
-        response=response,
-        db=db,
-        user_id="user-1",
-        session_id="thread-3",
-    )
+@pytest.mark.asyncio
+async def test_wrap_streaming_response_for_persistence_saves_only_agentic_answer_text():
+    db = await _make_db_session()
 
     try:
-        asyncio.run(_collect_streaming_response(wrapped))
-        assert False, "Expected stream interruption"
-    except RuntimeError as exc:
-        assert str(exc) == "stream interrupted"
+        await chat_persistence_service.persist_user_message(
+            db,
+            user_id="user-1",
+            session_id="thread-2",
+            user_query="Tell me about patience",
+        )
 
-    detail = chat_persistence_service.get_session_with_messages(
-        db,
-        user_id="user-1",
-        session_id="thread-3",
-        limit=100,
-        offset=0,
-    )
-    assert detail is not None
-    assert detail["messages"][-1]["content"] == "Partial answer"
+        async def body() -> AsyncIterator[str]:
+            yield 'event: status\ndata: {"step":"agent","message":"Agent thinking..."}\n\n'
+            yield 'event: response_chunk\ndata: {"token":"Patience"}\n\n'
+            yield 'event: response_chunk\ndata: {"token":" is beautiful."}\n\n'
+            yield 'event: response_end\ndata: {}\n\n'
+            yield 'event: done\ndata: {}\n\n'
+
+        callback_values = []
+        response = StreamingResponse(body(), media_type="text/event-stream")
+        wrapped = chat_persistence_service.wrap_streaming_response_for_persistence(
+            response=response,
+            db=db,
+            user_id="user-1",
+            session_id="thread-2",
+            on_assistant_message_saved=callback_values.append,
+        )
+
+        streamed = await _collect_streaming_response(wrapped)
+        assert 'event: response_chunk' in streamed
+
+        detail = await chat_persistence_service.get_session_with_messages(
+            db,
+            user_id="user-1",
+            session_id="thread-2",
+            limit=100,
+            offset=0,
+        )
+        assert detail is not None
+        assert detail["messages"][-1]["role"] == "assistant"
+        assert detail["messages"][-1]["content"] == "Patience is beautiful."
+        assert callback_values == ["Patience is beautiful."]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_wrap_streaming_response_for_persistence_saves_partial_agentic_answer_on_error():
+    db = await _make_db_session()
+
+    try:
+        await chat_persistence_service.persist_user_message(
+            db,
+            user_id="user-1",
+            session_id="thread-3",
+            user_query="Tell me about patience",
+        )
+
+        async def body() -> AsyncIterator[str]:
+            yield 'event: status\ndata: {"step":"agent","message":"Agent thinking..."}\n\n'
+            yield 'event: response_chunk\ndata: {"token":"Partial"}\n\n'
+            yield 'event: response_chunk\ndata: {"token":" answer"}\n\n'
+            raise RuntimeError("stream interrupted")
+
+        response = StreamingResponse(body(), media_type="text/event-stream")
+        wrapped = chat_persistence_service.wrap_streaming_response_for_persistence(
+            response=response,
+            db=db,
+            user_id="user-1",
+            session_id="thread-3",
+        )
+
+        with pytest.raises(RuntimeError, match="stream interrupted"):
+            await _collect_streaming_response(wrapped)
+
+        detail = await chat_persistence_service.get_session_with_messages(
+            db,
+            user_id="user-1",
+            session_id="thread-3",
+            limit=100,
+            offset=0,
+        )
+        assert detail is not None
+        assert detail["messages"][-1]["content"] == "Partial answer"
+    finally:
+        await db.close()
