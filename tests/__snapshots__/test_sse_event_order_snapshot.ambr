@@ -1,0 +1,14 @@
+# serializer version: 1
+# name: test_hadith_path_event_type_sequence_matches_snapshot
+  list([
+    'status:starting',
+    'status:agent',
+    'status:retrieve_shia_documents_tool',
+    'status:agent',
+    'status:generate_response',
+    'response_chunk',
+    'response_end',
+    'hadith_references',
+    'done',
+  ])
+# ---
