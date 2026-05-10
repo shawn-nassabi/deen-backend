@@ -357,6 +357,17 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         """
         logger.debug("Invoking FAIR-RAG sub-graph", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.fiqh.fiqh_graph import fiqh_subgraph
+        from core.context import _push_fiqh_status
+
+        # Real-time SSE: emit the latency-expectation intro the moment we
+        # enter the wrapper node, before the ~10-15s sub-graph invoke. Without
+        # this, the parent astream loop only sees fiqh_subgraph activity AFTER
+        # the sub-graph completes, leaving the user staring at "Fiqh query
+        # detected..." for the whole window.
+        _push_fiqh_status(
+            "fiqh_subgraph",
+            "Processing fiqh query (this may take 10-15 seconds)...",
+        )
 
         try:
             result = await fiqh_subgraph.ainvoke({
