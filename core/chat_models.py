@@ -24,26 +24,59 @@ def make_cached_system_message(text: str) -> SystemMessage:
     ])
 
 
+# DEE-51: explicit retry + timeout config across every ChatAnthropic.
+# langchain-anthropic defaults to max_retries=2 with no app-level timeout —
+# too tight for production overload spikes (529 / 503 / 429). 5 retries with
+# a 60s per-request timeout absorbs typical transient incidents within the
+# SSE no-proxy-timeout budget.
+_ANTHROPIC_MAX_RETRIES = 5
+_ANTHROPIC_TIMEOUT_S = 60
+
+
 def get_generator_model():
     """Returns ChatAnthropic for long-form generation (fiqh answers, general responses)."""
     from core.config import LARGE_LLM
-    return ChatAnthropic(model=LARGE_LLM, api_key=ANTHROPIC_API_KEY, max_tokens=4096)
+    return ChatAnthropic(
+        model=LARGE_LLM,
+        api_key=ANTHROPIC_API_KEY,
+        max_tokens=4096,
+        max_retries=_ANTHROPIC_MAX_RETRIES,
+        timeout=_ANTHROPIC_TIMEOUT_S,
+    )
 
 
 def get_enhancer_model():
     """Returns ChatAnthropic for query enhancement (short rewrites)."""
     from core.config import SMALL_LLM
-    return ChatAnthropic(model=SMALL_LLM, api_key=ANTHROPIC_API_KEY, max_tokens=512)
+    return ChatAnthropic(
+        model=SMALL_LLM,
+        api_key=ANTHROPIC_API_KEY,
+        max_tokens=512,
+        max_retries=_ANTHROPIC_MAX_RETRIES,
+        timeout=_ANTHROPIC_TIMEOUT_S,
+    )
 
 
 def get_classifier_model():
     """Returns ChatAnthropic for fiqh classification and SEA structured output."""
     from core.config import LARGE_LLM
-    return ChatAnthropic(model=LARGE_LLM, api_key=ANTHROPIC_API_KEY, max_tokens=2048)
+    return ChatAnthropic(
+        model=LARGE_LLM,
+        api_key=ANTHROPIC_API_KEY,
+        max_tokens=2048,
+        max_retries=_ANTHROPIC_MAX_RETRIES,
+        timeout=_ANTHROPIC_TIMEOUT_S,
+    )
 
 
 def get_translator_model():
     """Returns ChatAnthropic bound to temperature=0 for deterministic translation."""
     from core.config import LARGE_LLM
-    base = ChatAnthropic(model=LARGE_LLM, api_key=ANTHROPIC_API_KEY, max_tokens=1024)
+    base = ChatAnthropic(
+        model=LARGE_LLM,
+        api_key=ANTHROPIC_API_KEY,
+        max_tokens=1024,
+        max_retries=_ANTHROPIC_MAX_RETRIES,
+        timeout=_ANTHROPIC_TIMEOUT_S,
+    )
     return base.bind(temperature=0)
