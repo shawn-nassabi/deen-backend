@@ -1,5 +1,28 @@
 # Milestones
 
+## v1.4 LLM Input Caching (Shipped: 2026-05-04)
+
+**Phases completed:** 3 phases, 9 plans
+
+**Timeline:** 2026-05-03 → 2026-05-04 (2 days)
+**Files changed:** 22 Python files (+909 / -128 lines)
+**Python LOC:** ~24,055 total
+
+**Key accomplishments:**
+
+1. `make_cached_system_message()` helper in `core/chat_models.py` + `retrieve_quran_tafsir_tool_cached` dict — two caching primitives implementing Anthropic content-block format; `@tool(extras=...)` discovered as invalid API, worked around with `convert_to_anthropic_tool()` + dict mutation
+2. Cached system prompt and cache metrics logging wired into `agents/core/chat_agent.py` — `_agent_node` and `_generate_response_node` both use content-block format; per-call `cache_hit`, `cache_creation_tokens`, `cache_read_tokens` emitted at DEBUG with `correlation_id`
+3. `agent_tests/test_prompt_cache.py` standalone two-call verification — confirms `cache_creation_input_tokens > 0` (WRITE) on first call and `cache_read_input_tokens > 0` (HIT) on second identical call
+4. All 10 `ChatPromptTemplate` objects in `core/prompt_templates.py` and 6 `modules/fiqh/` files replaced with builder functions using `make_cached_system_message()` — eliminating the silent `cache_control` stripping anti-pattern (GitHub #26701)
+5. 6 consumer files updated (`classifier.py`, `translator.py`, `generator.py`, `stream_generator.py`, `pipeline_langgraph.py`, `primer_service.py`) — `with_redis_history` chain removed; fiqh import alias updated
+6. `record_cache_metrics_breadcrumb` helper in `core/sentry.py` + `cache_creation_tokens_total`/`cache_read_tokens_total` accumulator fields on `ChatState`; `_emit_cache_metrics_breadcrumb` fires at all 4 SSE done sites; 9 hermetic tests pass (17/17 with pre-existing suite)
+
+**Requirements:** 7/8 fully delivered (OBS-02 partial — implementation complete; measured hit rate pending post-deploy observation per DEE-50-POST-DEPLOY-CHECKLIST.md)
+
+**Known deferred items at close:** 0
+
+---
+
 ## v1.3 Sentry Deep Integration (Shipped: 2026-04-28)
 
 **Phases completed:** 4 phases, 8 plans

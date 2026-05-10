@@ -1,0 +1,39 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-04T00:00:00.000Z",
+  "phase": "19",
+  "phase_name": "observability-and-verification",
+  "phase_dir": ".planning/phases/19-observability-and-verification",
+  "plan": 3,
+  "task": 3,
+  "total_tasks": 3,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "19-01-task-1", "name": "Add record_cache_metrics_breadcrumb to core/sentry.py", "status": "done", "commit": "eddad24"},
+    {"id": "19-01-task-2", "name": "Add ChatState accumulator fields", "status": "done", "commit": "3d69a2d"},
+    {"id": "19-02-task-1", "name": "Accumulate cache tokens in _agent_node", "status": "done", "commit": "064bd75"},
+    {"id": "19-02-task-2", "name": "Compute ratio + fire breadcrumb at all 4 SSE done sites", "status": "done", "commit": "2c9e364"},
+    {"id": "19-03-task-1", "name": "Hermetic unit tests for OBS-01", "status": "done", "commit": "1d73ff4"},
+    {"id": "19-03-task-2", "name": "DEE-50-POST-DEPLOY-CHECKLIST.md", "status": "done", "commit": "90b716c"}
+  ],
+  "remaining_tasks": [
+    {"id": "19-03-task-3", "name": "OBS-02: post-deploy Linear comment with measured hit rate", "status": "pending_human_action", "resume_signal": "obs-02-closed"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [
+    {
+      "action": "After next production deploy: send two identical /chat/stream/agentic requests within 5 min, observe Sentry breadcrumbs, post Linear comment on DEE-50 per DEE-50-POST-DEPLOY-CHECKLIST.md",
+      "context": "OBS-02 requires production traffic and a Sentry screenshot — cannot be automated per D-12",
+      "blocking": false
+    }
+  ],
+  "decisions": [
+    {"decision": "D-07 option b: ChatState fields over ContextVar", "rationale": "Matches existing final_state.get(...) pattern; less invasive", "phase": "19"},
+    {"decision": "state.get(key, 0) + value over +=", "rationale": "Defensive against TypedDict absent keys in test-constructed states", "phase": "19"},
+    {"decision": "Non-streaming chat_pipeline_agentic left without breadcrumb", "rationale": "OBS-01 satisfied via streaming path (production path); deferred to future plan", "phase": "19"},
+    {"decision": "Wave 3 worktree had rogue commit bringing Phase 17/18 changes", "rationale": "Worktree base was old ancestor — cherry-picked only the 3 clean commits (test, checklist, SUMMARY)", "phase": "19"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Deploy feature/release-llm-cache-cost-reduction to production, then follow DEE-50-POST-DEPLOY-CHECKLIST.md to close OBS-02. After: reply obs-02-closed to complete Phase 19.",
+  "context_notes": "Phase 19 fully executed. All 12 v1.4 plans done. Code review found CR-01 (pre-existing SSE exception leak) — run /gsd-code-review-fix 19 before shipping. v1.4 milestone is complete pending OBS-02 post-deploy verification."
+}

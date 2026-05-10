@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from core.chat_models import get_enhancer_model
 from core.config import NOTE_FILTER_THRESHOLD, SIGNAL_QUALITY_THRESHOLD
-from core.prompt_templates import primer_generation_prompt_template
+from core.prompt_templates import primer_generation_messages
 from db.crud.personalized_primers import personalized_primer_crud
 from db.models.lesson_content import LessonContent
 from db.utils.personalized_primers_utils import (
@@ -789,10 +789,10 @@ class PrimerService:
         print("-" * 80)
 
         # Generate with LLM
-        formatted_prompt = primer_generation_prompt_template.invoke(prompt_inputs)
+        messages = primer_generation_messages(**prompt_inputs)
         # model = get_enhancer_model()
-        # response = await model.ainvoke(formatted_prompt)
-        response = await primers_model.ainvoke(formatted_prompt)
+        # response = await model.ainvoke(messages)
+        response = await primers_model.ainvoke(messages)
         # Parse response
         bullets = self._parse_llm_response(response.content)
 
@@ -856,7 +856,7 @@ class PrimerService:
         }
 
         # Generate with streaming LLM - stream tokens in real-time
-        formatted_prompt = primer_generation_prompt_template.invoke(prompt_inputs)
+        messages = primer_generation_messages(**prompt_inputs)
         # model = get_enhancer_model()
 
         # Stream the response and send chunks immediately
@@ -864,8 +864,8 @@ class PrimerService:
         first_token_received = False
         llm_start_time = time.perf_counter()
 
-        # async for chunk in model.astream(formatted_prompt):
-        async for chunk in primers_model.astream(formatted_prompt):
+        # async for chunk in model.astream(messages):
+        async for chunk in primers_model.astream(messages):
             if hasattr(chunk, 'content') and chunk.content:
                 # Log first token timing
                 if not first_token_received:

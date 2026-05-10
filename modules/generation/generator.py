@@ -14,8 +14,8 @@ def generate_response(query: str, retrieved_docs: list):
 
     chat_model = chat_models.get_generator_model()
 
-    prompt = prompt_templates.generator_prompt_template.invoke({"query":query,"references":references})
+    messages = prompt_templates.generator_messages(query=query, references=references)
 
-    response = chat_model.invoke(prompt.to_messages())
+    response = chat_model.invoke(messages)
 
     return response.content.strip()

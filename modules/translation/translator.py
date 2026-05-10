@@ -18,8 +18,8 @@ def translate_to_english(text: str, source_language: str | None = None) -> str:
 
     try:
         chat_model = chat_models.get_translator_model()
-        prompt = prompt_templates.translation_prompt_template.invoke({"source_language": source_language or "unknown", "text": text})
-        response = chat_model.invoke(prompt.to_messages())
+        messages = prompt_templates.translation_messages(source_language=source_language or "unknown", text=text)
+        response = chat_model.invoke(messages)
         out = (getattr(response, "content", None) or "").strip()
         return out or text
     except Exception as e:

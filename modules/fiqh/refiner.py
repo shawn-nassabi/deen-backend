@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import logging
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from core import chat_models
+from core.chat_models import make_cached_system_message
 from modules.fiqh.sea import SEAResult
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,15 @@ Rules:
 
 Example output: ["tayammum conditions when water unavailable", "wudu substitute dry ablution ruling"]"""
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", """Original query: {original_query}
+def _build_messages(
+    original_query: str,
+    confirmed_facts: str,
+    gaps: str,
+    prior_queries: str,
+) -> list:
+    return [
+        make_cached_system_message(SYSTEM_PROMPT),
+        HumanMessage(content=f"""Original query: {original_query}
 
 Confirmed facts so far:
 {confirmed_facts}
@@ -47,7 +54,7 @@ Previously tried queries (DO NOT REPEAT OR REPHRASE THESE):
 {prior_queries}
 
 Generate 1-4 new retrieval sub-queries targeting the gaps above."""),
-])
+    ]
 
 
 def _build_refine_messages(
@@ -58,7 +65,7 @@ def _build_refine_messages(
     confirmed_facts_text = "\n".join(f"- {f}" for f in sea_result.confirmed_facts) or "(none yet)"
     gaps_text = "\n".join(f"- {g}" for g in sea_result.gaps) or "(no specific gaps identified)"
     prior_queries_text = "\n".join(f"- {q}" for q in prior_queries) or "(none)"
-    return _prompt.format_messages(
+    return _build_messages(
         original_query=original_query,
         confirmed_facts=confirmed_facts_text,
         gaps=gaps_text,

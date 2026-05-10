@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: Sentry Deep Integration
-status: archived
-stopped_at: v1.3 milestone archived — ready for /gsd-new-milestone
-last_updated: "2026-04-28T00:00:00.000Z"
-last_activity: 2026-04-28
+milestone: v1.4
+milestone_name: LLM Input Caching
+status: SHIPPED — v1.4 archived 2026-05-04; OBS-02 pending post-deploy observation; ready for /gsd-new-milestone
+stopped_at: v1.4 milestone complete (2026-05-04)
+last_updated: "2026-05-04T00:00:00.000Z"
+last_activity: 2026-05-04 — v1.4 milestone archived; 3 phases, 9 plans complete; deploying to production
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
+  total_phases: 3
+  completed_phases: 3
+  total_plans: 9
+  completed_plans: 9
   percent: 100
 ---
 
@@ -18,27 +18,27 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-28 after v1.3 milestone archived)
+See: .planning/PROJECT.md (updated 2026-05-04 after v1.4 milestone archived)
 
 **Core value:** Every fiqh answer must be strictly grounded in retrieved evidence from Ayatollah Sistani's published rulings — the system refuses to answer rather than hallucinate or speculate.
-**Current focus:** Planning next milestone (run /gsd-new-milestone)
+**Current focus:** v1.4 SHIPPED — run `/gsd-new-milestone` to start v1.5
 
 ## Current Position
 
-Phase: 16 (complete)
-Plan: 1/1 plans done
-Status: v1.3 Sentry Deep Integration archived — 4 phases, 8 plans, 22/22 requirements complete
-Last activity: 2026-04-28
+Milestone v1.4 complete — all 3 phases, 9 plans shipped.
+Next: `/gsd-new-milestone` to define v1.5 requirements and roadmap.
+Status: v1.4 milestone complete — OBS-02 human action required after next deploy
+Last activity: 2026-05-04 — Phase 19 fully executed; VERIFICATION.md passed all automated checks
 
-Progress bar: `██████████` 100% (4/4 phases complete)
+Progress bar: `▓▓▓▓▓▓░░░░` 67% (2/3 phases complete)
 
 ## Performance Metrics
 
-| Metric | v1.0 | v1.1 | v1.2 | v1.3 |
-|--------|------|------|------|------|
-| Phases | 4 | 3 | 5 | 4 (planned) |
-| Plans | 12 | 6 | 9 | TBD |
-| Requirements | 39 | 8 | 23 | 20 |
+| Metric | v1.0 | v1.1 | v1.2 | v1.3 | v1.4 |
+|--------|------|------|------|------|------|
+| Phases | 4 | 3 | 5 | 4 | 3 |
+| Plans | 12 | 6 | 9 | 8 | 9 |
+| Requirements | 39 | 8 | 23 | 22 | 8 |
 
 ## Accumulated Context
 
@@ -46,21 +46,31 @@ Progress bar: `██████████` 100% (4/4 phases complete)
 
 All decisions logged in PROJECT.md Key Decisions table.
 
-### v1.3 Phase Structure
+### v1.4 Phase Structure
 
-| Phase | Focus | Requirements | Depends on |
-|-------|-------|--------------|------------|
-| 13 | Sentry Infrastructure | INFRA-01..05 | Nothing |
-| 14 | Route Layer Instrumentation | CHAT-01..03, REF-01..03, HIK-01..02, PRIM-01 | Phase 13 |
-| 15 | Pipeline and Tools Instrumentation | PIPE-01..02, TOOL-01..02 | Phase 13 |
-| 16 | Fiqh Sub-graph Instrumentation | FIQH-01..04 | Phase 13 |
+| Phase | Focus | Requirements | Status |
+|-------|-------|--------------|--------|
+| 17 | ChatAgent Caching Foundation | CACHE-01, CACHE-02, CACHE-03, CACHE-04, STRUCT-01 | Complete |
+| 18 | Module Prompt Restructuring | STRUCT-02 | Complete |
+| 19 | Observability and Verification | OBS-01, OBS-02 | Next |
 
-### Key Constraints for v1.3
+### Key Constraints for v1.4
 
-- `sentry-sdk` pinned at 2.27.0 — `_experiments.enable_logs` stays in `_experiments` (top-level only valid at >= 2.35.0)
-- `send_default_pii=True` must NOT be set — `before_send` hook required for GDPR Article 9 compliance (Islamic religious content = special-category data)
-- Per-node LangGraph traversal logs at DEBUG only — avoids Sentry log quota overrun at scale
-- No duplicate Sentry events: use `logger.error(exc_info=True)` OR `capture_exception()`, not both
+- CACHE-01 and CACHE-02 must be implemented together — system prompt alone (1,427 tokens) is below the 2,048-token minimum; only clears the threshold when combined with tool definitions (~3,722 tokens) as a single cached prefix
+- STRUCT-01 (make_cached_system_message helper) must exist before STRUCT-02 call sites can be refactored — Phase 17 delivers the helper, Phase 18 uses it
+- Never cache `modules/enhancement/enhancer.py` — Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens; caching would guarantee cost increase with zero hits
+- Never put `cache_control` inside `ToolMessage.content[]` — causes `invalid_cache` API error (GitHub #34920)
+- Use `response.response_metadata["usage"]` (raw Anthropic dict) for cache metrics, not `response.usage_metadata` — LangChain wrapper double-counts cached tokens on streaming calls (GitHub #32818)
+- `AnthropicPromptCachingMiddleware` does not exist in `langchain-anthropic==0.3.22` — do not attempt to import it
+- `ChatPromptTemplate.format_messages()` silently strips `cache_control` — all system prompts must use `SystemMessage(content=[...])` content-block lists (GitHub #26701)
+
+### Phase 18 Decisions (for Phase 19 context)
+
+- `generator_messages` and `hikmah_elaboration_messages` use plain `SystemMessage` (not `make_cached_system_message`) — their system bodies contain runtime variables, so caching would be a guaranteed miss every call (D-05)
+- `enhancer` templates excluded — Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens
+- `with_redis_history` removed from `stream_generator.py` — replaced with explicit `make_history(session_id).messages` fetch + direct `model.stream()`
+- `pipeline_langgraph.py` imports `_build_messages` as `fiqh_build_messages` (not the old `_prompt` alias)
+- `_generate_fiqh_response_node` in `chat_agent.py` also needed updating (missed in 18-02, hotfixed after verification)
 
 ### Pending Todos
 
@@ -68,8 +78,8 @@ None.
 
 ### Blockers/Concerns
 
-- Live Claude API smoke test (POST /chat/stream/agentic with real ANTHROPIC_API_KEY) not yet run — runtime environment confirmation only, not a code gap
-- bind_sentry_scope() exists in core/sentry.py but call sites wired in Phase 14+ — correlation_id Sentry tag not yet visible in events (expected)
+- Exact combined token count for ChatAgent (tools + system prompt) is estimated at ~5,149 — must be measured with tiktoken or Anthropic token counter as first implementation step in Phase 17 to confirm caching eligibility
+- `langchain-anthropic` version bump from 0.3.22 to 0.3.25 carries compatibility risk with `langchain==0.3.27` — leave at 0.3.22 until explicitly verified
 
 ### Quick Tasks Completed
 
@@ -81,6 +91,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-28
-Stopped at: v1.3 milestone archived
-Next action: /gsd-new-milestone to start v1.4 planning
+Last session: 2026-05-04
+Stopped at: v1.4 milestone archived and tagged; deploying branch to production
+Next action: After deploy, follow DEE-50-POST-DEPLOY-CHECKLIST.md to close OBS-02; then /gsd-new-milestone for v1.5
