@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-04 after v1.4 milestone archived)
 Milestone v1.4 complete — all 3 phases, 9 plans shipped.
 Next: `/gsd-new-milestone` to define v1.5 requirements and roadmap.
 Status: v1.4 milestone complete — OBS-02 human action required after next deploy
-Last activity: 2026-05-04 — Phase 19 fully executed; VERIFICATION.md passed all automated checks
+Last activity: 2026-05-09 — Completed quick task 260509-r51 (DEE-51): Anthropic + Pinecone retry layer + Sentry-visible error logging
 
 Progress bar: `▓▓▓▓▓▓░░░░` 67% (2/3 phases complete)
 
@@ -88,6 +88,7 @@ None.
 | 260420-t2v | Improve SSE status granularity in /stream/agentic endpoint | 2026-04-21 | 54c8418 | Verified | [260420-t2v-improve-sse-status-granularity-in-stream](./quick/260420-t2v-improve-sse-status-granularity-in-stream/) |
 | 260421-uma | Set up Sentry SDK for error tracking and structured logging | 2026-04-22 | fe61762 | Complete | [260421-uma-set-up-sentry-sdk-for-error-tracking-and](./quick/260421-uma-set-up-sentry-sdk-for-error-tracking-and/) |
 | 260422-qau | Build feedback API to capture chatbot responses | 2026-04-22 | 760cb05 | Verified | [260422-qau-build-feedback-api-to-capture-chatbot-re](./quick/260422-qau-build-feedback-api-to-capture-chatbot-re/) |
+| 260509-r51 | DEE-51 chatbot error resilience + observability (Anthropic/Pinecone retries + Sentry-visible logging) | 2026-05-09 | e110e03 | Complete | [260509-r51-dee-51-error-resilience-and-logging](./quick/260509-r51-dee-51-error-resilience-and-logging/) |
 
 ## Session Continuity
 
