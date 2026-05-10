@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from core.resilience import anthropic_retry
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.prompts.agent_prompts import (
     AGENT_SYSTEM_PROMPT,
@@ -37,6 +38,14 @@ from core.context import correlation_id as correlation_id_ctx
 from core.chat_models import make_cached_system_message
 
 logger = logging.getLogger(__name__)
+
+
+@anthropic_retry
+async def _retry_ainvoke(llm, messages):
+    """Module-level helper so @anthropic_retry can absorb transient errors
+    around LangGraph node LLM calls without each node redefining its own
+    retry-decorated wrapper. Each invocation is a fresh retry context."""
+    return await llm.ainvoke(messages)
 
 
 class ChatAgent:
@@ -181,7 +190,7 @@ class ChatAgent:
             messages.append(HumanMessage(content=self._build_iteration_summary(state)))
 
         try:
-            response = await self.llm.ainvoke(messages)
+            response = await _retry_ainvoke(self.llm, messages)
             # Cache metrics: use response_metadata["usage"] (raw Anthropic dict).
             # Do NOT use the LangChain usage wrapper — it double-counts cached tokens
             # in streaming paths (GitHub #32818).
@@ -290,7 +299,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             from core.chat_models import get_generator_model
 
             llm = get_generator_model()
-            response = await llm.ainvoke(generation_messages)
+            response = await _retry_ainvoke(llm, generation_messages)
             state["final_response"] = response.content
             state["response_generated"] = True
             logger.debug("Response generated", extra={"correlation_id": correlation_id_ctx.get(), "response_chars": len(response.content)})
@@ -325,7 +334,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     "Do not provide any ruling."
                 )
                 from langchain_core.messages import HumanMessage
-                response = await model.ainvoke([HumanMessage(content=prompt_text)])
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -412,7 +421,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
         try:
             model = get_generator_model()
-            response = await model.ainvoke(_build_messages(
+            response = await _retry_ainvoke(model, _build_messages(
                 query=state["user_query"],
                 evidence=_format_evidence(docs),
             ))
