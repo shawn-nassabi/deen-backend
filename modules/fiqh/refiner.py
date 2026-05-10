@@ -14,6 +14,7 @@ import logging
 from langchain_core.messages import HumanMessage
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
 from modules.fiqh.sea import SEAResult
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,18 @@ def refine_query(
         return [original_query]
 
 
+@anthropic_retry
+async def _arefine_query_call(
+    original_query: str,
+    sea_result: SEAResult,
+    prior_queries: list[str],
+):
+    model = chat_models.get_generator_model()
+    return await model.ainvoke(
+        _build_refine_messages(original_query, sea_result, prior_queries)
+    )
+
+
 async def arefine_query(
     original_query: str,
     sea_result: SEAResult,
@@ -121,11 +134,11 @@ async def arefine_query(
     if prior_queries is None:
         prior_queries = []
     try:
-        model = chat_models.get_generator_model()
-        response = await model.ainvoke(
-            _build_refine_messages(original_query, sea_result, prior_queries)
-        )
+        response = await _arefine_query_call(original_query, sea_result, prior_queries)
         return _parse_refinements(response.content.strip(), original_query)
-    except Exception as e:
-        logger.warning("[FIQH_REFINER] arefine_query error, falling back to original: %s", e)
+    except Exception:
+        logger.error(
+            "[FIQH_REFINER] arefine_query failed after retries, falling back to original",
+            exc_info=True,
+        )
         return [original_query]

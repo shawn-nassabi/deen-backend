@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
 
 logger = logging.getLogger(__name__)
 
@@ -99,17 +100,25 @@ def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
         return _insufficient_fallback(query)
 
 
+@anthropic_retry
+async def _aassess_evidence_call(query: str, docs: list[dict]) -> SEAResult:
+    model = chat_models.get_classifier_model()
+    structured_model = model.with_structured_output(SEAResult)
+    return await structured_model.ainvoke(
+        _build_messages(
+            query=query,
+            evidence=_format_evidence(docs),
+        )
+    )
+
+
 async def aassess_evidence(query: str, docs: list[dict]) -> SEAResult:
     """Native async variant of `assess_evidence`."""
     try:
-        model = chat_models.get_classifier_model()
-        structured_model = model.with_structured_output(SEAResult)
-        return await structured_model.ainvoke(
-            _build_messages(
-                query=query,
-                evidence=_format_evidence(docs),
-            )
+        return await _aassess_evidence_call(query, docs)
+    except Exception:
+        logger.error(
+            "[FIQH_SEA] aassess_evidence failed after retries, returning INSUFFICIENT fallback",
+            exc_info=True,
         )
-    except Exception as e:
-        logger.warning("[FIQH_SEA] aassess_evidence error, returning INSUFFICIENT fallback: %s", e)
         return _insufficient_fallback(query)

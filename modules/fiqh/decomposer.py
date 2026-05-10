@@ -7,10 +7,14 @@ optimised for retrieval from Ayatollah Sistani's "Islamic Laws" (4th edition).
 
 from __future__ import annotations
 import json
+import logging
 
 from langchain_core.messages import HumanMessage
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You decompose a user's Islamic fiqh question into 1-4 independent, keyword-rich sub-queries for retrieval from Ayatollah Sistani's "Islamic Laws" (4th edition).
@@ -81,11 +85,20 @@ def decompose_query(query: str) -> list[str]:
         return [query]
 
 
+@anthropic_retry
+async def _adecompose_query_call(query: str):
+    model = chat_models.get_classifier_model()
+    return await model.ainvoke(_build_messages(query))
+
+
 async def adecompose_query(query: str) -> list[str]:
     """Native async variant of `decompose_query`."""
     try:
-        model = chat_models.get_classifier_model()
-        response = await model.ainvoke(_build_messages(query))
+        response = await _adecompose_query_call(query)
         return _parse_subqueries(response.content.strip(), query)
     except Exception:
+        logger.error(
+            "[FIQH_DECOMPOSER] adecompose_query failed after retries, falling back to original query",
+            exc_info=True,
+        )
         return [query]
