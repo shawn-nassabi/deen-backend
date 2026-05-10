@@ -491,6 +491,22 @@ async def chat_pipeline_streaming_agentic(
             _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
+        except asyncio.CancelledError:
+            # SSE client disconnect: Starlette cancels the StreamingResponse task
+            # group, which propagates CancelledError into whatever await we are
+            # suspended on (LLM stream, tool call, retrieval). Treat as normal
+            # end-of-stream. Log at INFO so LoggingIntegration does not capture
+            # to Sentry, and re-raise so anyio's cancel scope completes cleanly.
+            logger.info(
+                "Client disconnected during agentic chat stream",
+                extra={
+                    "correlation_id": correlation_id_ctx.get(),
+                    "session_id": session_id,
+                    "endpoint": "/chat/stream/agentic",
+                },
+            )
+            raise
+
         except Exception as e:
             logger.error("Pipeline error", exc_info=True, extra={
                 "correlation_id": correlation_id_ctx.get(),
