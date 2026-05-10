@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+import asyncio
 import logging
 import json
 
@@ -263,6 +264,24 @@ async def stream_personalized_primer(
                     "filter": request.filter,
                 },
             )
+
+        except asyncio.CancelledError:
+            # Client closed the SSE connection mid-stream (frontend nav, tab close,
+            # network drop). This is a normal end-of-stream condition, not an
+            # application error. Logged at INFO so LoggingIntegration does not
+            # capture it as a Sentry event. Re-raise so anyio's cancel scope can
+            # unwind cleanly — swallowing CancelledError in an async generator
+            # corrupts the surrounding cancel scope.
+            logger.info(
+                "Client disconnected during primer stream",
+                extra={
+                    "correlation_id": corr_id,
+                    "user_id": request.user_id,
+                    "lesson_id": request.lesson_id,
+                    "endpoint": "/primers/personalized/stream",
+                },
+            )
+            raise
 
         except HTTPException as http_exc:
             logger.error(
