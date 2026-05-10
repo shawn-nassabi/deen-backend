@@ -1,7 +1,11 @@
+import logging
+
 from core.config import PINECONE_API_KEY
 from langchain_pinecone import PineconeVectorStore
 from modules.embedding import embedder
 from pinecone import Pinecone, ServerlessSpec
+
+logger = logging.getLogger(__name__)
 
 pc = Pinecone(
         api_key=PINECONE_API_KEY
@@ -29,6 +33,6 @@ def _get_vectorstore(index_name):
             namespace="ns1",
             text_key="text_en"
         )
-    except Exception as e:
-        print(f"Error initializing PineconeVectorStore: {e}")
-        raise e
+    except Exception:
+        logger.error("Error initializing PineconeVectorStore", exc_info=True)
+        raise

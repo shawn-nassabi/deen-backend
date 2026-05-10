@@ -15,7 +15,8 @@ from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.core.chat_agent import ChatAgent
 from core import utils
 import logging
-from core.context import correlation_id as correlation_id_ctx
+from core.context import correlation_id as correlation_id_ctx, fiqh_status_queue
+from core.sentry import record_cache_metrics_breadcrumb
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,42 @@ def sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def _emit_cache_metrics_breadcrumb(final_state) -> None:
+    """Compute per-turn cache efficiency ratio and emit Sentry breadcrumb.
+
+    Phase 19 (D-05, D-06, D-08, D-09):
+      - Sum across all _agent_node iterations is read from ChatState fields
+        (cache_creation_tokens_total, cache_read_tokens_total). D-07 option b.
+      - Cold-cache (denominator 0) -> 0.0, NOT ZeroDivisionError. Required
+        explicitly by ROADMAP.md Phase 19 success criterion 2.
+      - Helper at core.sentry is a no-op when SENTRY_ENABLED is false (D-09),
+        so this caller can fire unconditionally on every done boundary.
+      - final_state may be None (line 201 path) or a dict missing the new
+        fields (defensive against legacy/test ChatState construction).
+
+    NOTE: Only _agent_node LLM calls are counted. Generator nodes
+    (_generate_response_node, _generate_fiqh_response_node) are excluded by
+    design because they run outside the iterative tool-calling loop where
+    prompt cache warm-up occurs.
+    """
+    if final_state is None or not isinstance(final_state, dict):
+        sum_creation = 0
+        sum_read = 0
+        n_iter = 0
+    else:
+        sum_creation = final_state.get("cache_creation_tokens_total", 0) or 0
+        sum_read = final_state.get("cache_read_tokens_total", 0) or 0
+        n_iter = final_state.get("iterations", 0) or 0
+    total = sum_creation + sum_read
+    ratio = (sum_read / total) if total > 0 else 0.0  # D-06 cold-cache guard
+    record_cache_metrics_breadcrumb(
+        cache_efficiency_ratio=ratio,
+        cache_read_tokens=sum_read,
+        cache_creation_tokens=sum_creation,
+        iterations=n_iter,
+    )
+
+
 async def chat_pipeline_streaming_agentic(
     user_query: str,
     session_id: str,
@@ -105,100 +142,174 @@ async def chat_pipeline_streaming_agentic(
         assistant_text = ""
         history_written = False
 
+        # Producer/consumer multiplex: agent.astream events AND fiqh sub-graph
+        # real-time status events (pushed via the fiqh_status_queue contextvar
+        # from inside sub-graph nodes) flow through a single output queue. The
+        # consumer loop below yields items as they arrive, so status events
+        # emitted DURING the ~10-15s fiqh sub-graph window reach the SSE
+        # stream in real time instead of being batched at sub-graph
+        # completion. See .planning/quick/260509-3cd-realtime-fiqh-sse-status-events/.
+        output_queue: asyncio.Queue = asyncio.Queue()
+        queue_token = fiqh_status_queue.set(output_queue)
+
+        # Mutable boxes for closure-shared state (producer task writes;
+        # consumer + post-loop body read).
+        state_box: dict = {"final_state": None, "exception": None}
+        fiqh_realtime_count: dict = {"v": 0}
+        fiqh_trail_emitted_box: dict = {"v": False}
+
+        # Sentinel marking producer completion (or failure).
+        _AGENT_DONE = object()
+
+        async def _agent_producer() -> None:
+            """Drive agent.astream and translate node events into SSE strings.
+
+            SSE strings are pushed into output_queue. fiqh sub-graph nodes
+            push status dicts into the same queue via the contextvar; the
+            consumer loop below dispatches based on item type.
+            """
+            try:
+                # Pre-flight: emit an immediate status event so the frontend
+                # shows feedback during the synchronous classify_fiqh_query()
+                # LLM call inside _fiqh_classification_node (otherwise the
+                # first ~2-4s would be silent).
+                await output_queue.put(sse_event(
+                    "status",
+                    {"step": "starting", "message": "Checking query classification..."},
+                ))
+
+                emitted_tool_call_ids: set = set()
+
+                async for event in agent.astream(
+                    user_query=user_query,
+                    session_id=session_id,
+                    target_language=target_language,
+                    config=agent_config.to_dict(),
+                    streaming_mode=True
+                ):
+                    for node_name, node_state in event.items():
+                        logger.debug("Node traversal", extra={"correlation_id": correlation_id_ctx.get(), "node": node_name})
+                        state_box["final_state"] = node_state
+
+                        # Node-arrival status. Skip 'fiqh_subgraph' here: the
+                        # keep-alive message is now pushed via the contextvar
+                        # queue from _call_fiqh_subgraph_node entry (real-time
+                        # at sub-graph start, not after the 10-15s wait).
+                        if node_name != "fiqh_subgraph":
+                            node_msg = NODE_STATUS_MESSAGES.get(node_name)
+                            # `fiqh_classification` runs on every query; only
+                            # announce "Fiqh query detected..." when the
+                            # classifier actually routed to the fiqh path.
+                            if node_name == "fiqh_classification":
+                                is_fiqh = (
+                                    node_state.get("is_fiqh")
+                                    if isinstance(node_state, dict)
+                                    else False
+                                )
+                                if not is_fiqh:
+                                    node_msg = None
+                            if node_msg:
+                                await output_queue.put(sse_event(
+                                    "status",
+                                    {"step": node_name, "message": node_msg},
+                                ))
+
+                        # Per-tool status events: emit only on the 'agent'
+                        # node event, where the AIMessage with tool_calls is
+                        # first surfaced (BEFORE the 'tools' node runs).
+                        if node_name == "agent":
+                            messages = node_state.get("messages", []) if isinstance(node_state, dict) else []
+                            for msg in messages:
+                                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                    for index, tc in enumerate(msg.tool_calls):
+                                        tool_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                                        tool_call_id = None
+                                        if isinstance(tc, dict):
+                                            tool_call_id = tc.get("id")
+                                        else:
+                                            tool_call_id = getattr(tc, "id", None)
+                                        if not tool_call_id:
+                                            tool_call_id = f"{node_name}:{index}:{tool_name}"
+
+                                        if tool_name and tool_call_id not in emitted_tool_call_ids:
+                                            emitted_tool_call_ids.add(tool_call_id)
+                                            tool_msg = TOOL_STATUS_MESSAGES.get(
+                                                tool_name, f"Running {tool_name}..."
+                                            )
+                                            await output_queue.put(sse_event(
+                                                "status",
+                                                {"step": tool_name, "message": tool_msg},
+                                            ))
+
+                        # Fiqh sub-graph: real-time status events should have
+                        # already been pushed by sub-graph nodes via the
+                        # contextvar queue while the sub-graph ran. If the
+                        # real-time path emitted something, suppress the
+                        # retrospective replay (it would only duplicate). If
+                        # not (e.g. sub-graph raised before any node ran, so
+                        # status_events is empty AND fiqh_realtime_count == 0),
+                        # the canned-stages fallback below the consumer loop
+                        # still fires — same safety net as before.
+                        if node_name == "fiqh_subgraph" and isinstance(node_state, dict):
+                            if fiqh_realtime_count["v"] > 0:
+                                # Real-time path covered the trail.
+                                fiqh_trail_emitted_box["v"] = True
+                            else:
+                                fiqh_status_events = node_state.get("fiqh_status_events") or []
+                                if fiqh_status_events:
+                                    fiqh_trail_emitted_box["v"] = True
+                                    for ev in fiqh_status_events:
+                                        if not isinstance(ev, dict):
+                                            continue
+                                        step = ev.get("step")
+                                        message = ev.get("message")
+                                        if step and message:
+                                            await output_queue.put(sse_event(
+                                                "status",
+                                                {"step": step, "message": message},
+                                            ))
+            except Exception as exc:
+                state_box["exception"] = exc
+            finally:
+                await output_queue.put(_AGENT_DONE)
+
+        producer_task = asyncio.create_task(_agent_producer())
+
         try:
-            final_state = None
-            emitted_tool_call_ids = set()
-            fiqh_trail_emitted = False
+            # Consumer loop: yield items as they arrive. Items are either
+            # SSE-encoded strings (from the producer) or raw status dicts
+            # (from fiqh sub-graph nodes via the contextvar). The dict path
+            # tracks fiqh_realtime_count so the producer can suppress the
+            # retrospective replay.
+            while True:
+                item = await output_queue.get()
+                if item is _AGENT_DONE:
+                    break
+                if isinstance(item, dict) and "step" in item and "message" in item:
+                    fiqh_realtime_count["v"] += 1
+                    yield sse_event(
+                        "status",
+                        {"step": item["step"], "message": item["message"]},
+                    )
+                elif isinstance(item, str):
+                    yield item
+                else:
+                    logger.debug("Unexpected output_queue item type", extra={
+                        "correlation_id": correlation_id_ctx.get(),
+                        "type": type(item).__name__,
+                    })
 
-            # Pre-flight: emit an immediate status event so the frontend shows
-            # feedback during the synchronous classify_fiqh_query() LLM call
-            # inside _fiqh_classification_node (which otherwise produces a
-            # multi-second silent gap between request start and the first
-            # node-arrival event).
-            yield sse_event(
-                "status",
-                {"step": "starting", "message": "Checking query classification..."},
-            )
+            # Surface any exception raised inside the producer.
+            await producer_task
+            if state_box["exception"] is not None:
+                raise state_box["exception"]
 
-            async for event in agent.astream(
-                user_query=user_query,
-                session_id=session_id,
-                target_language=target_language,
-                config=agent_config.to_dict(),
-                streaming_mode=True
-            ):
-                for node_name, node_state in event.items():
-                    logger.debug("Node traversal", extra={"correlation_id": correlation_id_ctx.get(), "node": node_name})
-                    final_state = node_state
-
-                    # Emit the node-arrival status event (may be None for 'tools'
-                    # — per-tool messages on the 'agent' event cover that window).
-                    node_msg = NODE_STATUS_MESSAGES.get(node_name)
-                    # `fiqh_classification` runs on every query; only announce
-                    # "Fiqh query detected..." when the classifier actually
-                    # routed to the fiqh path. Non-fiqh outcomes fall through
-                    # to the next node's status (e.g. "Agent thinking...").
-                    if node_name == "fiqh_classification":
-                        is_fiqh = (
-                            node_state.get("is_fiqh")
-                            if isinstance(node_state, dict)
-                            else False
-                        )
-                        if not is_fiqh:
-                            node_msg = None
-                    if node_msg:
-                        yield sse_event("status", {"step": node_name, "message": node_msg})
-
-                    # Per-tool status events: emit only on the 'agent' node event,
-                    # where the AIMessage with tool_calls is first surfaced (BEFORE
-                    # the 'tools' node runs). Scanning on the 'tools' event is
-                    # redundant and causes whiplash in the status stream.
-                    if node_name == "agent":
-                        messages = node_state.get("messages", []) if isinstance(node_state, dict) else []
-                        for msg in messages:
-                            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                                for index, tc in enumerate(msg.tool_calls):
-                                    tool_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                                    tool_call_id = None
-                                    if isinstance(tc, dict):
-                                        tool_call_id = tc.get("id")
-                                    else:
-                                        tool_call_id = getattr(tc, "id", None)
-                                    if not tool_call_id:
-                                        tool_call_id = f"{node_name}:{index}:{tool_name}"
-
-                                    if tool_name and tool_call_id not in emitted_tool_call_ids:
-                                        emitted_tool_call_ids.add(tool_call_id)
-                                        tool_msg = TOOL_STATUS_MESSAGES.get(
-                                            tool_name, f"Running {tool_name}..."
-                                        )
-                                        yield sse_event(
-                                            "status",
-                                            {"step": tool_name, "message": tool_msg},
-                                        )
-
-                    # Fiqh sub-graph: the node-arrival status (keep-alive message
-                    # "Processing fiqh query (this may take 10-15 seconds)...") was
-                    # already emitted above via NODE_STATUS_MESSAGES. Now replay
-                    # the batch of per-iteration status events the sub-graph
-                    # accumulated while it ran (surfaced via Task 1).
-                    if node_name == "fiqh_subgraph" and isinstance(node_state, dict):
-                        fiqh_status_events = node_state.get("fiqh_status_events") or []
-                        if fiqh_status_events:
-                            fiqh_trail_emitted = True
-                            for ev in fiqh_status_events:
-                                if not isinstance(ev, dict):
-                                    continue
-                                step = ev.get("step")
-                                message = ev.get("message")
-                                if step and message:
-                                    yield sse_event(
-                                        "status",
-                                        {"step": step, "message": message},
-                                    )
+            final_state = state_box["final_state"]
+            fiqh_trail_emitted = fiqh_trail_emitted_box["v"]
 
             if final_state is None:
                 yield sse_event("error", {"message": "No response generated."})
+                _emit_cache_metrics_breadcrumb(final_state)
                 yield sse_event("done", {})
                 return
 
@@ -217,13 +328,14 @@ async def chat_pipeline_streaming_agentic(
                     assistant_text=assistant_text,
                 )
                 history_written = True
+                _emit_cache_metrics_breadcrumb(final_state)
                 yield sse_event("done", {})
                 return
 
             # --- Fiqh FAIR-RAG streaming path ---
             if final_state.get("fiqh_category") in VALID_FIQH_CATEGORIES:
                 from modules.fiqh.generator import (
-                    _prompt as fiqh_prompt,
+                    _build_messages as fiqh_build_messages,
                     _format_evidence,
                     _build_references_section,
                     INSUFFICIENT_WARNING,
@@ -266,12 +378,12 @@ async def chat_pipeline_streaming_agentic(
                 else:
                     # Stream fiqh answer token-by-token using fiqh-specific prompt (D-06)
                     model = chat_models.get_generator_model()
-                    chain = fiqh_prompt | model
+                    fiqh_messages = fiqh_build_messages(
+                        query=user_query,
+                        evidence=_format_evidence(fiqh_docs),
+                    )
                     response_tokens = []
-                    async for chunk in chain.astream({
-                        "query": user_query,
-                        "evidence": _format_evidence(fiqh_docs),
-                    }):
+                    async for chunk in model.astream(fiqh_messages):
                         token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                         if token:
                             response_tokens.append(token)
@@ -330,19 +442,16 @@ async def chat_pipeline_streaming_agentic(
 
                         references = utils.compact_format_references(all_docs)
                         chat_model = chat_models.get_generator_model()
-                        prompt = prompt_templates.generator_prompt_template
-                        chain = prompt | chat_model
                         history_messages = await amake_history(runtime_session_id).aget_messages()
+                        messages = prompt_templates.generator_messages(
+                            query=user_query,
+                            references=references,
+                            target_language=target_language,
+                            chat_history=history_messages,
+                        )
 
                         response_tokens = []
-                        async for chunk in chain.astream(
-                            {
-                                "target_language": target_language,
-                                "query": user_query,
-                                "references": references,
-                                "chat_history": history_messages,
-                            },
-                        ):
+                        async for chunk in chat_model.astream(messages):
                             token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                             if token:
                                 response_tokens.append(token)
@@ -379,6 +488,7 @@ async def chat_pipeline_streaming_agentic(
                     quran_json = utils.format_quran_references_as_json(quran_docs)
                     yield sse_event("quran_references", {"references": quran_json})
 
+            _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
 
         except Exception as e:
@@ -400,8 +510,19 @@ async def chat_pipeline_streaming_agentic(
                         "correlation_id": correlation_id_ctx.get(),
                         "session_id": session_id,
                     })
-            yield sse_event("error", {"message": str(e)})
+            yield sse_event("error", {"message": "An error occurred. Please try again."})
+            _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
+        finally:
+            # Always release the contextvar so a later request on this asyncio
+            # task chain can't accidentally inherit a closed queue. The
+            # producer task has already drained itself by the time we get
+            # here (consumer loop only exits on _AGENT_DONE, which the
+            # producer's own finally guarantees) so cancellation is unneeded.
+            try:
+                fiqh_status_queue.reset(queue_token)
+            except Exception:
+                pass
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 

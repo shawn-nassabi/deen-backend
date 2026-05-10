@@ -11,8 +11,10 @@ from __future__ import annotations
 import logging
 import re
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from core import chat_models
+from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
 from modules.fiqh.sea import SEAResult
 
 logger = logging.getLogger(__name__)
@@ -42,15 +44,16 @@ STRICT RULES:
 - Do NOT issue fatwas — present what Sistani's published rulings state
 - Do NOT speculate beyond what the evidence states"""
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", """Question: {query}
+def _build_messages(query: str, evidence: str) -> list:
+    return [
+        make_cached_system_message(SYSTEM_PROMPT),
+        HumanMessage(content=f"""Question: {query}
 
 Evidence:
 {evidence}
 
 Generate a comprehensive answer with inline [n] citations referencing the evidence numbers above."""),
-])
+    ]
 
 
 def _format_evidence(docs: list[dict]) -> str:
@@ -108,7 +111,7 @@ def generate_answer(
     """
     try:
         model = chat_models.get_generator_model()
-        response = model.invoke(_prompt.format_messages(
+        response = model.invoke(_build_messages(
             query=query,
             evidence=_format_evidence(docs),
         ))
@@ -124,6 +127,15 @@ def generate_answer(
         return fallback
 
 
+@anthropic_retry
+async def _agenerate_answer_call(query: str, docs: list[dict]):
+    model = chat_models.get_generator_model()
+    return await model.ainvoke(_build_messages(
+        query=query,
+        evidence=_format_evidence(docs),
+    ))
+
+
 async def agenerate_answer(
     query: str,
     docs: list[dict],
@@ -132,14 +144,13 @@ async def agenerate_answer(
 ) -> str:
     """Native async variant of `generate_answer`."""
     try:
-        model = chat_models.get_generator_model()
-        response = await model.ainvoke(_prompt.format_messages(
-            query=query,
-            evidence=_format_evidence(docs),
-        ))
+        response = await _agenerate_answer_call(query, docs)
         return _post_process_answer(response.content.strip(), docs, is_sufficient)
-    except Exception as e:
-        logger.error("[FIQH_GENERATOR] agenerate_answer error: %s", e)
+    except Exception:
+        logger.error(
+            "[FIQH_GENERATOR] agenerate_answer failed after retries",
+            exc_info=True,
+        )
         return (
             "I was unable to generate an answer from the retrieved evidence. "
             "Please consult Sistani's official resources at sistani.org or contact his office directly."

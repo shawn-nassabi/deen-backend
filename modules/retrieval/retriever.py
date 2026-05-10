@@ -1,11 +1,14 @@
 import asyncio
-import traceback
+import logging
 
 from core.config import DEEN_SPARSE_INDEX_NAME, DEEN_DENSE_INDEX_NAME, QURAN_DENSE_INDEX_NAME
 import core.vectorstore as vectorstore_module
 from core.utils import decompress_text
+from core.resilience import pinecone_retry
 from modules.embedding import embedder
 from modules.reranking import reranker
+
+logger = logging.getLogger(__name__)
 
 
 def _require_index_name(index_name, env_var_name):
@@ -20,7 +23,6 @@ def _require_index_name(index_name, env_var_name):
 
 
 def retrieve_documents(query, no_of_docs=10):
-    print("INSIDE retrive_documents")
     try:
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
         dense_docs_and_score = dense_vectorstore.similarity_search_with_score(query, k=20)
@@ -36,14 +38,12 @@ def retrieve_documents(query, no_of_docs=10):
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
-    except Exception as e:
-        print(f"Error retrieving documents: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.error("retrieve_documents error", exc_info=True)
         return []
 
 
 def retrieve_shia_documents(query, no_of_docs=10):
-    print("INSIDE shia retrive_documents")
     try:
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
         dense_docs_and_score = dense_vectorstore.similarity_search_with_score(
@@ -62,14 +62,12 @@ def retrieve_shia_documents(query, no_of_docs=10):
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
-    except Exception as e:
-        print(f"Error retrieving documents: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.error("retrieve_shia_documents error", exc_info=True)
         return []
 
 
 def retrieve_sunni_documents(query, no_of_docs=10):
-    print("INSIDE sunni retrive_documents")
     try:
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
         dense_docs_and_score = dense_vectorstore.similarity_search_with_score(
@@ -88,9 +86,8 @@ def retrieve_sunni_documents(query, no_of_docs=10):
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
-    except Exception as e:
-        print(f"Error retrieving documents: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.error("retrieve_sunni_documents error", exc_info=True)
         return []
 
 
@@ -99,7 +96,6 @@ def retrieve_quran_documents(query, no_of_docs=5):
     Retrieve Quran Tafsir documents from the dedicated dense-only Pinecone index.
     Uses direct Pinecone query (no sparse search, no reranking).
     """
-    print("INSIDE quran retrieve_documents")
     try:
         index_name = _require_index_name(QURAN_DENSE_INDEX_NAME, "QURAN_DENSE_INDEX_NAME")
         query_vector = embedder.getDenseEmbedder().embed_query(query)
@@ -124,12 +120,11 @@ def retrieve_quran_documents(query, no_of_docs=5):
                 "quran_translation": quran_translation,
             })
         return docs
-    except ValueError as e:
-        print(f"Error retrieving Quran documents: {e}")
+    except ValueError:
+        logger.error("retrieve_quran_documents misconfigured (missing index)", exc_info=True)
         raise
-    except Exception as e:
-        print(f"Error retrieving Quran documents: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.error("retrieve_quran_documents error", exc_info=True)
         raise
 
 
@@ -143,6 +138,7 @@ def retrieve_quran_documents(query, no_of_docs=5):
 # branches run concurrently via asyncio.gather.
 
 
+@pinecone_retry
 async def _dense_search(index_name, query, *, k, sect_filter=None):
     vectorstore = vectorstore_module._get_vectorstore(index_name)
     kwargs = {"k": k}
@@ -151,6 +147,7 @@ async def _dense_search(index_name, query, *, k, sect_filter=None):
     return await vectorstore.asimilarity_search_with_score(query, **kwargs)
 
 
+@pinecone_retry
 async def _sparse_search(query, *, k, sect_filter=None, namespace="ns1"):
     sparse_embedding = await asyncio.to_thread(embedder.generate_sparse_embedding, query)
     sparse_index = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
@@ -173,9 +170,10 @@ async def _aretrieve_with_filter(query, no_of_docs, sect):
         return await asyncio.to_thread(
             reranker.rerank_documents, dense_docs_and_score, sparse_docs, no_of_docs
         )
-    except Exception as e:
-        print(f"Error retrieving {sect} documents: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.error(
+            "Pinecone retrieval failed after retries (sect=%s)", sect, exc_info=True
+        )
         return []
 
 
@@ -185,6 +183,17 @@ async def aretrieve_shia_documents(query, no_of_docs=10):
 
 async def aretrieve_sunni_documents(query, no_of_docs=10):
     return await _aretrieve_with_filter(query, no_of_docs, "sunni")
+
+
+@pinecone_retry
+async def _aretrieve_quran_call(index, query_vector, no_of_docs):
+    return await asyncio.to_thread(
+        index.query,
+        vector=query_vector,
+        top_k=no_of_docs,
+        include_metadata=True,
+        namespace="ns1",
+    )
 
 
 async def aretrieve_quran_documents(query, no_of_docs=5):
@@ -197,13 +206,7 @@ async def aretrieve_quran_documents(query, no_of_docs=5):
         query_vector = await embedder.getDenseEmbedder().aembed_query(query)
 
         index = vectorstore_module._get_sparse_vectorstore(index_name)
-        results = await asyncio.to_thread(
-            index.query,
-            vector=query_vector,
-            top_k=no_of_docs,
-            include_metadata=True,
-            namespace="ns1",
-        )
+        results = await _aretrieve_quran_call(index, query_vector, no_of_docs)
 
         docs = []
         for match in results.matches:
@@ -217,12 +220,13 @@ async def aretrieve_quran_documents(query, no_of_docs=5):
                 "quran_translation": quran_translation,
             })
         return docs
-    except ValueError as e:
-        print(f"Error retrieving Quran documents: {e}")
+    except ValueError:
+        logger.error(
+            "aretrieve_quran_documents misconfigured (missing index)", exc_info=True
+        )
         raise
-    except Exception as e:
-        print(f"Error retrieving Quran documents: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.error("aretrieve_quran_documents failed after retries", exc_info=True)
         raise
 
 

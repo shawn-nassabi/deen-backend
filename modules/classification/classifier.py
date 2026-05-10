@@ -1,6 +1,7 @@
 from modules.context import context
 from core import chat_models
 from core import prompt_templates
+from core.resilience import anthropic_retry
 
 
 def classify_fiqh_query(query: str, session_id: str = None) -> bool:
@@ -17,10 +18,16 @@ def classify_fiqh_query(query: str, session_id: str = None) -> bool:
         chatContext = context.get_recent_context(session_id, 2)
 
     chat_model = chat_models.get_classifier_model()
-    prompt = prompt_templates.fiqh_classifier_system_prompt.invoke({"query": query, "chatContext": chatContext})
-    response = chat_model.invoke(prompt.to_messages())
+    messages = prompt_templates.fiqh_classifier_messages(query=query, chatContext=chatContext)
+    response = chat_model.invoke(messages)
     response = response.content.strip()
     return "true" in response.lower()
+
+
+@anthropic_retry
+async def _aclassify_fiqh_query_call(messages):
+    chat_model = chat_models.get_classifier_model()
+    return await chat_model.ainvoke(messages)
 
 
 async def aclassify_fiqh_query(query: str, session_id: str = None) -> bool:
@@ -33,9 +40,8 @@ async def aclassify_fiqh_query(query: str, session_id: str = None) -> bool:
     if session_id:
         chatContext = context.get_recent_context(session_id, 2)
 
-    chat_model = chat_models.get_classifier_model()
-    prompt = prompt_templates.fiqh_classifier_system_prompt.invoke({"query": query, "chatContext": chatContext})
-    response = await chat_model.ainvoke(prompt.to_messages())
+    messages = prompt_templates.fiqh_classifier_messages(query=query, chatContext=chatContext)
+    response = await _aclassify_fiqh_query_call(messages)
     return "true" in response.content.strip().lower()
 
 
@@ -52,10 +58,16 @@ def classify_non_islamic_query(query: str, session_id: str = None) -> bool:
         chatContext = context.get_recent_context(session_id)
 
     chat_model = chat_models.get_classifier_model()
-    prompt = prompt_templates.nonislamic_classifer_prompt_template.invoke({"query": query, "chatContext": chatContext})
-    response = chat_model.invoke(prompt.to_messages())
+    messages = prompt_templates.nonislamic_classifier_messages(query=query, chatContext=chatContext)
+    response = chat_model.invoke(messages)
     response = response.content.strip()
     return "true" in response.lower()
+
+
+@anthropic_retry
+async def _aclassify_non_islamic_query_call(messages):
+    chat_model = chat_models.get_classifier_model()
+    return await chat_model.ainvoke(messages)
 
 
 async def aclassify_non_islamic_query(query: str, session_id: str = None) -> bool:
@@ -64,7 +76,6 @@ async def aclassify_non_islamic_query(query: str, session_id: str = None) -> boo
     if session_id:
         chatContext = context.get_recent_context(session_id)
 
-    chat_model = chat_models.get_classifier_model()
-    prompt = prompt_templates.nonislamic_classifer_prompt_template.invoke({"query": query, "chatContext": chatContext})
-    response = await chat_model.ainvoke(prompt.to_messages())
+    messages = prompt_templates.nonislamic_classifier_messages(query=query, chatContext=chatContext)
+    response = await _aclassify_non_islamic_query_call(messages)
     return "true" in response.content.strip().lower()

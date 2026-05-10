@@ -5,7 +5,8 @@
 - ✅ **v1.0 Fiqh Agentic RAG MVP** — Phases 1-4 (shipped 2026-03-25)
 - ✅ **v1.1 Supabase Migration** — Phases 5-7 (shipped 2026-04-07)
 - ✅ **v1.2 Claude Migration** — Phases 8-12 (shipped 2026-04-10)
-- 🔄 **v1.3 Sentry Deep Integration** — Phases 13-16 (in progress)
+- ✅ **v1.3 Sentry Deep Integration** — Phases 13-16 (shipped 2026-04-28)
+- ✅ **v1.4 LLM Input Caching** — Phases 17-19 (shipped 2026-05-04)
 
 ## Phases
 
@@ -54,6 +55,17 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 - [x] **Phase 16: Fiqh Sub-graph Instrumentation** - structured warnings and searchable fields in fiqh FAIR-RAG loop (1/1 plans) — completed 2026-04-28
 
 Full details: `.planning/milestones/v1.3-ROADMAP.md`
+
+</details>
+
+<details>
+<summary>✅ v1.4 LLM Input Caching (Phases 17-19) — SHIPPED 2026-05-04</summary>
+
+- [x] **Phase 17: ChatAgent Caching Foundation** - cache_control on tool definitions and system prompt; helper function; verification; per-call metrics logging (completed 2026-05-03)
+- [x] **Phase 18: Module Prompt Restructuring** - refactor all ChatPromptTemplate system-message patterns to content-block format with cache_control markers (completed 2026-05-03)
+- [x] **Phase 19: Observability and Verification** - per-session cache efficiency ratio in Sentry; Linear ticket DEE-50 updated with measured results (completed 2026-05-04, OBS-02 pending post-deploy)
+
+Full details: `.planning/milestones/v1.4-ROADMAP.md`
 
 </details>
 
@@ -124,6 +136,66 @@ Plans:
 Plans:
 - [x] 16-01-PLAN.md — Instrument agents/fiqh/fiqh_graph.py (convert 10 existing log calls to extra={} style, add 3 WARNING boundaries) and create tests/test_fiqh_graph_logging.py (7 unit tests for WARNING boundaries)
 
+### Phase 17: ChatAgent Caching Foundation
+**Goal**: The ChatAgent delivers confirmed Anthropic prompt cache hits on every `/chat/stream/agentic` request — tool definitions and system prompt are cached together as a single prefix, and cache metrics are observable in structured logs
+**Depends on**: Nothing (self-contained change to agents/core/chat_agent.py and core/chat_models.py)
+**Requirements**: CACHE-01, CACHE-02, CACHE-03, CACHE-04, STRUCT-01
+**Success Criteria** (what must be TRUE):
+  1. After the first `/chat/stream/agentic` request, a DEBUG log line appears containing `cache_creation_input_tokens > 0` and `cache_hit: false` — confirming the cache was written
+  2. After a second identical request within 5 minutes, a DEBUG log line appears containing `cache_read_input_tokens > 0` and `cache_hit: true` — confirming the cache was read
+  3. `response.response_metadata["usage"]` (raw Anthropic dict, not LangChain wrapper) is the source for all cache metrics — `usage_metadata` is not used for cache counts
+  4. `core/chat_models.py` contains a `make_cached_system_message(text: str) -> SystemMessage` function; every construction of the ChatAgent system prompt calls this helper — no inline `SystemMessage(content=AGENT_SYSTEM_PROMPT)` string patterns remain in `agents/core/chat_agent.py`
+  5. The 6 ChatAgent tool definitions are passed to `bind_tools()` with `cache_control: {"type": "ephemeral"}` on the last tool dict only — confirmed by inspecting the outbound Anthropic API payload
+**Plans**: 3 plans
+
+Plans:
+- [x] 17-01-PLAN.md — Add make_cached_system_message helper to core/chat_models.py + cache_control on last retrieval tool
+- [x] 17-02-PLAN.md — Wire helper into agents/core/chat_agent.py (both SystemMessage sites) + cache metrics logging
+- [x] 17-03-PLAN.md — Create agent_tests/test_prompt_cache.py (two-call cache write/hit verification)
+
+### Phase 18: Module Prompt Restructuring
+**Goal**: All module-level system prompts across FAIR-RAG and classifier/translation modules are in content-block format with cache_control markers, eliminating the silent ChatPromptTemplate stripping anti-pattern from the codebase
+**Depends on**: Phase 17 (make_cached_system_message helper must exist before call sites use it)
+**Requirements**: STRUCT-02
+**Success Criteria** (what must be TRUE):
+  1. Grepping `modules/fiqh/`, `modules/classification/`, `modules/translation/`, and `core/prompt_templates.py` for `ChatPromptTemplate.from_messages` returns zero results — all system-message patterns have been replaced
+  2. Every refactored system message constructs via `make_cached_system_message()` from `core/chat_models.py` — no inline `[{"type": "text", "text": ..., "cache_control": ...}]` dict literals appear at call sites
+  3. `modules/enhancement/enhancer.py` is untouched — a code comment explains why caching is explicitly excluded (Haiku 4.5 requires 4,096-token minimum; enhancer prompt is ~330 tokens)
+  4. A smoke test of the `/chat/stream/agentic` endpoint after the refactor returns a valid response — zero behavioral regression
+**Plans**: 3 plans
+
+Plans:
+
+**Wave 1** *(parallel — no dependencies between plans)*
+- [x] 18-01-PLAN.md — Refactor core/prompt_templates.py (replace 6 ChatPromptTemplate objects with builder functions, add exclusion comments on 2 enhancer templates) + refactor all 6 modules/fiqh/ files (replace _prompt with _build_messages)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 18-02-PLAN.md — Update 6 consumer files: modules/classification/classifier.py, modules/translation/translator.py, modules/generation/generator.py (legacy), modules/generation/stream_generator.py (remove with_redis_history), core/pipeline_langgraph.py (fiqh import + non-fiqh generation path), services/primer_service.py (both call sites)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 18-03-PLAN.md — Update test monkeypatch in tests/test_agentic_streaming_pipeline.py + smoke test checkpoint
+
+### Phase 19: Observability and Verification
+**Goal**: Cache efficiency is visible in Sentry per session, and the Linear ticket DEE-50 documents confirmed hit rates and implementation details after live deployment
+**Depends on**: Phase 17 (cache metrics must be flowing before ratios can be computed), Phase 18 (all call sites restructured)
+**Requirements**: OBS-01, OBS-02
+**Success Criteria** (what must be TRUE):
+  1. A completed chat session produces a Sentry breadcrumb containing `cache_efficiency_ratio` (float 0.0–1.0) computed as `cache_read_tokens / (cache_read_tokens + cache_creation_tokens)` — visible in the Sentry issue detail breadcrumb trail
+  2. A session with a cold cache (first-ever request or after TTL expiry) produces `cache_efficiency_ratio: 0.0`; a warm-cache session produces a ratio > 0.0
+  3. Linear ticket DEE-50 contains: list of eligible call sites, the approach taken (content-block format + bind_tools injection), and measured cache hit rates from at least one production deployment
+**Plans**: 3 plans
+
+Plans:
+
+**Wave 1**
+- [ ] 19-01-PLAN.md — Add record_cache_metrics_breadcrumb helper to core/sentry.py + cache_*_tokens_total ChatState fields (foundation, purely additive)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 19-02-PLAN.md — Wire _agent_node accumulation in agents/core/chat_agent.py + ratio computation + breadcrumb emission at all 4 SSE done sites in core/pipeline_langgraph.py
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 19-03-PLAN.md — Hermetic unit-seam tests in tests/test_cache_metrics_breadcrumb.py + DEE-50 post-deploy checklist artifact + OBS-02 manual closure checkpoint (D-12)
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -140,7 +212,10 @@ Plans:
 | 10. Embedding Migration | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 11. Dead Code Cleanup | v1.2 | 2/2 | Complete | 2026-04-10 |
 | 12. Docs & Reference Cleanup | v1.2 | 1/1 | Complete | 2026-04-10 |
-| 13. Sentry Infrastructure | v1.3 | 2/2 | Complete    | 2026-04-26 |
+| 13. Sentry Infrastructure | v1.3 | 2/2 | Complete | 2026-04-26 |
 | 14. Route Layer Instrumentation | v1.3 | 3/3 | Complete | 2026-04-26 |
-| 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete   | 2026-04-28 |
+| 15. Pipeline and Tools Instrumentation | v1.3 | 2/2 | Complete | 2026-04-28 |
 | 16. Fiqh Sub-graph Instrumentation | v1.3 | 1/1 | Complete | 2026-04-28 |
+| 17. ChatAgent Caching Foundation | v1.4 | 3/3 | Complete | 2026-05-03 |
+| 18. Module Prompt Restructuring | v1.4 | 3/3 | Complete | 2026-05-03 |
+| 19. Observability and Verification | v1.4 | 3/3 | Complete | 2026-05-04 |

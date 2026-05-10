@@ -11,9 +11,11 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from core import chat_models
+from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +51,11 @@ Be granular: decompose the query into the smallest independently verifiable find
 For citations, use an exact quote from the evidence — do not paraphrase.
 For gap_summary, briefly describe what information is missing from the evidence."""
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "Query: {query}\n\nRetrieved Evidence:\n{evidence}"),
-])
+def _build_messages(query: str, evidence: str) -> list:
+    return [
+        make_cached_system_message(SYSTEM_PROMPT),
+        HumanMessage(content=f"Query: {query}\n\nRetrieved Evidence:\n{evidence}"),
+    ]
 
 
 def _format_evidence(docs: list[dict]) -> str:
@@ -87,7 +90,7 @@ def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
         model = chat_models.get_classifier_model()
         structured_model = model.with_structured_output(SEAResult)
         return structured_model.invoke(
-            _prompt.format_messages(
+            _build_messages(
                 query=query,
                 evidence=_format_evidence(docs),
             )
@@ -97,17 +100,25 @@ def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
         return _insufficient_fallback(query)
 
 
+@anthropic_retry
+async def _aassess_evidence_call(query: str, docs: list[dict]) -> SEAResult:
+    model = chat_models.get_classifier_model()
+    structured_model = model.with_structured_output(SEAResult)
+    return await structured_model.ainvoke(
+        _build_messages(
+            query=query,
+            evidence=_format_evidence(docs),
+        )
+    )
+
+
 async def aassess_evidence(query: str, docs: list[dict]) -> SEAResult:
     """Native async variant of `assess_evidence`."""
     try:
-        model = chat_models.get_classifier_model()
-        structured_model = model.with_structured_output(SEAResult)
-        return await structured_model.ainvoke(
-            _prompt.format_messages(
-                query=query,
-                evidence=_format_evidence(docs),
-            )
+        return await _aassess_evidence_call(query, docs)
+    except Exception:
+        logger.error(
+            "[FIQH_SEA] aassess_evidence failed after retries, returning INSUFFICIENT fallback",
+            exc_info=True,
         )
-    except Exception as e:
-        logger.warning("[FIQH_SEA] aassess_evidence error, returning INSUFFICIENT fallback: %s", e)
         return _insufficient_fallback(query)

@@ -122,18 +122,13 @@ class TestFiqhSSEPath:
             mock_agent.astream = fake_astream
 
             with patch("core.pipeline_langgraph.ChatAgent", MockAgent):
-                with patch("modules.fiqh.generator._prompt") as mock_prompt:
-                    # Mock the streaming chain
-                    mock_chain = MagicMock()
-                    mock_chain.stream.return_value = [
+                    mock_model_instance = MagicMock()
+                    mock_model_instance.stream.return_value = [
                         MagicMock(content="Based on Sistani's ruling [1], "),
                         MagicMock(content="wudu is required."),
                     ]
-                    mock_prompt.__or__ = MagicMock(return_value=mock_chain)
 
-                    with patch("core.chat_models.get_generator_model") as mock_model:
-                        mock_model.return_value = MagicMock()
-
+                    with patch("core.chat_models.get_generator_model", return_value=mock_model_instance):
                         from core.pipeline_langgraph import chat_pipeline_streaming_agentic
                         response = await chat_pipeline_streaming_agentic(
                             user_query="Is wudu required before salah?",
@@ -163,12 +158,10 @@ class TestFiqhSSEPath:
             mock_agent.astream = fake_astream
 
             with patch("core.pipeline_langgraph.ChatAgent", MockAgent):
-                with patch("modules.fiqh.generator._prompt") as mock_prompt:
-                    mock_chain = MagicMock()
-                    mock_chain.stream.return_value = [MagicMock(content="wudu is required [1].")]
-                    mock_prompt.__or__ = MagicMock(return_value=mock_chain)
+                    mock_model_instance = MagicMock()
+                    mock_model_instance.stream.return_value = [MagicMock(content="wudu is required [1].")]
 
-                    with patch("core.chat_models.get_generator_model", return_value=MagicMock()):
+                    with patch("core.chat_models.get_generator_model", return_value=mock_model_instance):
                         with patch("services.chat_persistence_service.append_turn_to_runtime_history"):
                             from core.pipeline_langgraph import chat_pipeline_streaming_agentic
                             response = await chat_pipeline_streaming_agentic(
@@ -197,12 +190,10 @@ class TestFiqhSSEPath:
             mock_agent.astream = fake_astream
 
             with patch("core.pipeline_langgraph.ChatAgent", MockAgent):
-                with patch("modules.fiqh.generator._prompt") as mock_prompt:
-                    mock_chain = MagicMock()
-                    mock_chain.stream.return_value = [MagicMock(content="answer [1].")]
-                    mock_prompt.__or__ = MagicMock(return_value=mock_chain)
+                    mock_model_instance = MagicMock()
+                    mock_model_instance.stream.return_value = [MagicMock(content="answer [1].")]
 
-                    with patch("core.chat_models.get_generator_model", return_value=MagicMock()):
+                    with patch("core.chat_models.get_generator_model", return_value=mock_model_instance):
                         with patch("services.chat_persistence_service.append_turn_to_runtime_history"):
                             from core.pipeline_langgraph import chat_pipeline_streaming_agentic
                             response = await chat_pipeline_streaming_agentic(

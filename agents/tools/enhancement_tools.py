@@ -3,9 +3,14 @@ Query enhancement tools for the LangGraph agent.
 These tools improve query quality for better retrieval results.
 """
 
-from langchain_core.tools import tool
-from modules.enhancement import enhancer
+import logging
 from typing import Dict
+
+from langchain_core.tools import tool
+from core.context import correlation_id as correlation_id_ctx
+from modules.enhancement import enhancer
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -51,7 +56,11 @@ async def enhance_query_tool(query: str, session_id: str) -> Dict[str, str]:
             "original_query": query
         }
     except Exception as e:
-        print(f"[enhance_query_tool] Error: {e}")
+        logger.error(
+            "enhance_query_tool error",
+            exc_info=True,
+            extra={"correlation_id": correlation_id_ctx.get()},
+        )
         return {
             "enhanced_query": query,  # Fall back to original on error
             "original_query": query,

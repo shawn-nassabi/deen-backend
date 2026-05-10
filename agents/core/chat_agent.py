@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from core.resilience import anthropic_retry
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.prompts.agent_prompts import (
     AGENT_SYSTEM_PROMPT,
@@ -29,12 +30,22 @@ from agents.tools import (
     retrieve_sunni_documents_tool,
     translate_to_english_tool,
 )
+from agents.tools.retrieval_tools import retrieve_quran_tafsir_tool_cached
 from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
 from core.context import correlation_id as correlation_id_ctx
+from core.chat_models import make_cached_system_message
 
 logger = logging.getLogger(__name__)
+
+
+@anthropic_retry
+async def _retry_ainvoke(llm, messages):
+    """Module-level helper so @anthropic_retry can absorb transient errors
+    around LangGraph node LLM calls without each node redefining its own
+    retry-decorated wrapper. Each invocation is a fresh retry context."""
+    return await llm.ainvoke(messages)
 
 
 class ChatAgent:
@@ -64,7 +75,17 @@ class ChatAgent:
             temperature=self.config.model.temperature,
             max_tokens=self.config.model.max_tokens,
         )
-        return llm.bind_tools(self.tools)
+        # Build a bind_tools list with the last tool replaced by the cached Anthropic dict.
+        # self.tools keeps callable objects for ToolNode; this list is only for bind_tools.
+        bind_tools_list = [
+            check_if_non_islamic_tool,
+            translate_to_english_tool,
+            enhance_query_tool,
+            retrieve_shia_documents_tool,
+            retrieve_sunni_documents_tool,
+            retrieve_quran_tafsir_tool_cached,
+        ]
+        return llm.bind_tools(bind_tools_list)
 
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(ChatState)
@@ -163,14 +184,33 @@ class ChatAgent:
         ]
 
         if state["iterations"] == 1:
-            messages.insert(0, SystemMessage(content=AGENT_SYSTEM_PROMPT))
+            messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
             messages.append(HumanMessage(content=self._build_initial_user_message(state)))
         else:
             messages.append(HumanMessage(content=self._build_iteration_summary(state)))
 
         try:
-            response = await self.llm.ainvoke(messages)
+            response = await _retry_ainvoke(self.llm, messages)
+            # Cache metrics: use response_metadata["usage"] (raw Anthropic dict).
+            # Do NOT use the LangChain usage wrapper — it double-counts cached tokens
+            # in streaming paths (GitHub #32818).
+            _usage = (response.response_metadata or {}).get("usage", {})
+            _cache_creation = _usage.get("cache_creation_input_tokens", 0) or 0
+            _cache_read = _usage.get("cache_read_input_tokens", 0) or 0
+            logger.debug(
+                "Agent LLM cache metrics",
+                extra={
+                    "correlation_id": correlation_id_ctx.get(),
+                    "cache_hit": _cache_read > 0,
+                    "cache_creation_tokens": _cache_creation,
+                    "cache_read_tokens": _cache_read,
+                },
+            )
             state["messages"].append(response)
+            # Phase 19 (D-05, D-07 option b): accumulate per-turn cache tokens.
+            # Sum across all iterations; ratio computed once at SSE done in pipeline_langgraph.
+            state["cache_creation_tokens_total"] = state.get("cache_creation_tokens_total", 0) + _cache_creation
+            state["cache_read_tokens_total"] = state.get("cache_read_tokens_total", 0) + _cache_read
             if not getattr(response, "tool_calls", None) and self._has_any_documents(state):
                 state["ready_to_answer"] = True
         except Exception as exc:
@@ -244,7 +284,7 @@ class ChatAgent:
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
         generation_messages = [
-            SystemMessage(content=AGENT_SYSTEM_PROMPT),
+            make_cached_system_message(AGENT_SYSTEM_PROMPT),
             HumanMessage(
                 content=f"""User query: {state['user_query']}
 
@@ -259,7 +299,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             from core.chat_models import get_generator_model
 
             llm = get_generator_model()
-            response = await llm.ainvoke(generation_messages)
+            response = await _retry_ainvoke(llm, generation_messages)
             state["final_response"] = response.content
             state["response_generated"] = True
             logger.debug("Response generated", extra={"correlation_id": correlation_id_ctx.get(), "response_chars": len(response.content)})
@@ -294,7 +334,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     "Do not provide any ruling."
                 )
                 from langchain_core.messages import HumanMessage
-                response = await model.ainvoke([HumanMessage(content=prompt_text)])
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -317,6 +357,17 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         """
         logger.debug("Invoking FAIR-RAG sub-graph", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.fiqh.fiqh_graph import fiqh_subgraph
+        from core.context import _push_fiqh_status
+
+        # Real-time SSE: emit the latency-expectation intro the moment we
+        # enter the wrapper node, before the ~10-15s sub-graph invoke. Without
+        # this, the parent astream loop only sees fiqh_subgraph activity AFTER
+        # the sub-graph completes, leaving the user staring at "Fiqh query
+        # detected..." for the whole window.
+        _push_fiqh_status(
+            "fiqh_subgraph",
+            "Processing fiqh query (this may take 10-15 seconds)...",
+        )
 
         try:
             result = await fiqh_subgraph.ainvoke({
@@ -359,7 +410,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         """
         logger.debug("Generating fiqh answer (non-streaming)", extra={"correlation_id": correlation_id_ctx.get()})
         from modules.fiqh.generator import (
-            _prompt,
+            _build_messages,
             _format_evidence,
             _build_references_section,
             INSUFFICIENT_WARNING,
@@ -381,7 +432,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
         try:
             model = get_generator_model()
-            response = await model.ainvoke(_prompt.format_messages(
+            response = await _retry_ainvoke(model, _build_messages(
                 query=state["user_query"],
                 evidence=_format_evidence(docs),
             ))

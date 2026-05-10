@@ -3,9 +3,14 @@ Classification tools for the LangGraph agent.
 These tools help determine if a query is relevant and answerable.
 """
 
-from langchain_core.tools import tool
-from modules.classification import classifier
+import logging
 from typing import Dict
+
+from langchain_core.tools import tool
+from core.context import correlation_id as correlation_id_ctx
+from modules.classification import classifier
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -51,7 +56,11 @@ async def check_if_non_islamic_tool(query: str, session_id: str) -> Dict[str, an
             "explanation": explanation
         }
     except Exception as e:
-        print(f"[check_if_non_islamic_tool] Error: {e}")
+        logger.error(
+            "check_if_non_islamic_tool error",
+            exc_info=True,
+            extra={"correlation_id": correlation_id_ctx.get()},
+        )
         return {
             "is_non_islamic": False,  # Default to allowing the query
             "explanation": f"Classification error: {str(e)}"
@@ -100,7 +109,11 @@ async def check_if_fiqh_tool(query: str, session_id: str) -> Dict[str, any]:
             "explanation": explanation
         }
     except Exception as e:
-        print(f"[check_if_fiqh_tool] Error: {e}")
+        logger.error(
+            "check_if_fiqh_tool error",
+            exc_info=True,
+            extra={"correlation_id": correlation_id_ctx.get()},
+        )
         return {
             "is_fiqh": False,  # Default to allowing the query
             "explanation": f"Classification error: {str(e)}"

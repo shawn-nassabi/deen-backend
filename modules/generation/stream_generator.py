@@ -2,7 +2,7 @@ import logging
 from core import utils
 from core import chat_models
 from core import prompt_templates
-from core.memory import with_redis_history, trim_history, make_history
+from core.memory import trim_history, make_history
 from core.logging_config import setup_logging, get_memory_logger
 import asyncio
 from typing import Optional
@@ -23,17 +23,16 @@ def generate_response_stream(query: str, retrieved_docs: list, session_id: str, 
 
     chat_model = chat_models.get_generator_model()
 
-    # prompt = prompt_templates.generator_prompt_template.invoke({"query":query,"references":references})
-    prompt = prompt_templates.generator_prompt_template
-    chain = prompt | chat_model
-
-    chain_with_history = with_redis_history(chain)
+    history_messages = make_history(session_id).messages
+    messages = prompt_templates.generator_messages(
+        query=query,
+        references=references,
+        target_language=target_language,
+        chat_history=history_messages,
+    )
 
     # Stream chunks to caller
-    for chunk in chain_with_history.stream(
-        {"target_language": target_language, "query": query, "references": references},
-        config={"configurable": {"session_id": session_id}},
-    ):
+    for chunk in chat_model.stream(messages):
         # `chunk` is typically an AIMessageChunk or string
         yield getattr(chunk, "content", str(chunk) if chunk is not None else "")
 
@@ -41,29 +40,23 @@ def generate_response_stream(query: str, retrieved_docs: list, session_id: str, 
     hist = make_history(session_id)
     trim_history(hist)
 
-def _build_elaboration_chain():
-    chat_model = chat_models.get_generator_model()
-    prompt = prompt_templates.hikmah_elaboration_prompt_template
-    return prompt | chat_model
-
-
-def _elaboration_chain_input(
+def _build_elaboration_messages(
     selected_text: str,
     context_text: str,
     hikmah_tree_name: str,
     lesson_name: str,
     lesson_summary: str,
     retrieved_docs: list,
-) -> dict:
+) -> list:
     references = utils.compact_format_references(retrieved_docs=retrieved_docs)
-    return {
-        "selected_text": selected_text,
-        "context_text": context_text,
-        "hikmah_tree_name": hikmah_tree_name,
-        "lesson_name": lesson_name,
-        "lesson_summary": lesson_summary,
-        "references": references,
-    }
+    return prompt_templates.hikmah_elaboration_messages(
+        selected_text=selected_text,
+        context_text=context_text,
+        hikmah_tree_name=hikmah_tree_name,
+        lesson_name=lesson_name,
+        lesson_summary=lesson_summary,
+        references=references,
+    )
 
 
 def _schedule_hikmah_memory_update(user_id: str, selected_text: str, hikmah_tree_name: str, lesson_name: str):
@@ -109,12 +102,12 @@ def generate_elaboration_response_stream(selected_text: str, context_text: str, 
             "lesson_name": lesson_name,
         },
     )
-    chain = _build_elaboration_chain()
-    chain_input = _elaboration_chain_input(
+    chat_model = chat_models.get_generator_model()
+    messages = _build_elaboration_messages(
         selected_text, context_text, hikmah_tree_name, lesson_name, lesson_summary, retrieved_docs
     )
 
-    for chunk in chain.stream(chain_input):
+    for chunk in chat_model.stream(messages):
         yield getattr(chunk, "content", str(chunk) if chunk is not None else "")
 
     if user_id:
@@ -146,12 +139,12 @@ async def agenerate_elaboration_response_stream(
             "lesson_name": lesson_name,
         },
     )
-    chain = _build_elaboration_chain()
-    chain_input = _elaboration_chain_input(
+    chat_model = chat_models.get_generator_model()
+    messages = _build_elaboration_messages(
         selected_text, context_text, hikmah_tree_name, lesson_name, lesson_summary, retrieved_docs
     )
 
-    async for chunk in chain.astream(chain_input):
+    async for chunk in chat_model.astream(messages):
         yield getattr(chunk, "content", str(chunk) if chunk is not None else "")
 
     if user_id:

@@ -10,7 +10,7 @@ Call pattern: fiqh_subgraph.invoke({...FiqhState initial dict...})
 """
 from __future__ import annotations
 import logging
-from core.context import correlation_id as correlation_id_ctx
+from core.context import correlation_id as correlation_id_ctx, _push_fiqh_status
 from typing import Literal
 
 from langgraph.graph import END, StateGraph
@@ -28,6 +28,7 @@ async def _decompose_node(state: FiqhState) -> dict:
     from modules.fiqh.decomposer import adecompose_query
 
     new_event = {"step": "fiqh_decompose", "message": "Decomposing fiqh query..."}
+    _push_fiqh_status(new_event["step"], new_event["message"])
     try:
         sub_queries = await adecompose_query(state["query"])
         logger.info("Fiqh query decomposed", extra={
@@ -58,6 +59,12 @@ async def _retrieve_node(state: FiqhState) -> dict:
 
     iteration = state["iteration"] + 1
     new_event = {"step": "fiqh_retrieve", "message": f"Retrieving fiqh documents (iteration {iteration})..."}
+
+    # Real-time SSE: only emit per-stage labels for the first iteration. On
+    # retries (iteration >= 2), the user already saw "Searching deeper..."
+    # from _refine_node so we suppress duplicate per-stage chatter.
+    if state["iteration"] == 0:
+        _push_fiqh_status("fiqh_retrieve", "Retrieving fiqh documents...")
 
     # Use the last query in prior_queries for this retrieval
     current_query = state["prior_queries"][-1] if state["prior_queries"] else state["query"]
@@ -104,6 +111,11 @@ async def _filter_node(state: FiqhState) -> dict:
     from modules.fiqh.filter import afilter_evidence
 
     new_event = {"step": "fiqh_filter", "message": "Filtering fiqh evidence..."}
+    # Real-time SSE: only emit per-stage label on the first iteration.
+    # _retrieve_node increments iteration before calling us, so iteration == 1
+    # here corresponds to the first pass.
+    if state["iteration"] == 1:
+        _push_fiqh_status("fiqh_filter", "Filtering evidence...")
     try:
         filtered = await afilter_evidence(state["query"], state["accumulated_docs"])
         if len(filtered) == 0:
@@ -137,6 +149,10 @@ async def _assess_node(state: FiqhState) -> dict:
     from modules.fiqh.sea import aassess_evidence, SEAResult
 
     new_event = {"step": "fiqh_assess", "message": "Assessing evidence sufficiency..."}
+    # Real-time SSE: only emit per-stage label on the first iteration. On
+    # retries the "Searching deeper..." message already covers the loop.
+    if state["iteration"] == 1:
+        _push_fiqh_status("fiqh_assess", "Assessing evidence sufficiency...")
     try:
         sea_result = await aassess_evidence(state["query"], state["accumulated_docs"])
         verdict = sea_result.verdict
@@ -172,6 +188,10 @@ async def _refine_node(state: FiqhState) -> dict:
     from modules.fiqh.refiner import arefine_query
 
     new_event = {"step": "fiqh_refine", "message": "Refining query for next retrieval iteration..."}
+    # Real-time SSE: collapse the entire retry iteration into a single
+    # "Searching deeper..." message — refine only runs when the previous
+    # iteration was insufficient and we're about to loop back to retrieve.
+    _push_fiqh_status("fiqh_searching_deeper", "Searching deeper for evidence...")
     try:
         refinements = await arefine_query(
             original_query=state["query"],
