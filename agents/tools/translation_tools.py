@@ -3,9 +3,14 @@ Translation tools for the LangGraph agent.
 These tools handle translation between English and other languages.
 """
 
-from langchain_core.tools import tool
-from modules.translation import translator
+import logging
 from typing import Dict
+
+from langchain_core.tools import tool
+from core.context import correlation_id as correlation_id_ctx
+from modules.translation import translator
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -45,7 +50,11 @@ async def translate_to_english_tool(text: str, source_language: str) -> Dict[str
             "source_language": source_language
         }
     except Exception as e:
-        print(f"[translate_to_english_tool] Error: {e}")
+        logger.error(
+            "translate_to_english_tool error",
+            exc_info=True,
+            extra={"correlation_id": correlation_id_ctx.get()},
+        )
         return {
             "translated_text": text,  # Return original on error
             "original_text": text,
@@ -92,7 +101,11 @@ async def translate_response_tool(text: str, target_language: str) -> Dict[str, 
             "note": "Response translation not yet implemented, returning English"
         }
     except Exception as e:
-        print(f"[translate_response_tool] Error: {e}")
+        logger.error(
+            "translate_response_tool error",
+            exc_info=True,
+            extra={"correlation_id": correlation_id_ctx.get()},
+        )
         return {
             "translated_text": text,  # Return original on error
             "original_text": text,

@@ -1,5 +1,6 @@
 # core/memory.py
 import json
+import logging
 from typing import Callable, List, Optional, Union
 
 import redis  # legacy sync client — still used by `make_history` callers
@@ -12,6 +13,8 @@ from langchain_core.messages import BaseMessage, message_to_dict, messages_from_
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from core.config import REDIS_URL, KEY_PREFIX, TTL_SECONDS, MAX_MESSAGES
+
+logger = logging.getLogger(__name__)
 
 HistoryT = Union[RedisChatMessageHistory, EphemeralHistory]
 
@@ -26,10 +29,10 @@ def _redis_ok(url: str) -> bool:
     try:
         client = redis.from_url(url)
         client.ping()
-        print("USING REDIS, MEMORY PERSISTENCE ENABLED")
+        logger.info("Redis reachable; memory persistence enabled")
         return True
-    except Exception as e:
-        print(f"[memory] Redis not reachable: {e}")
+    except Exception:
+        logger.error("Redis not reachable; falling back to ephemeral history", exc_info=True)
         return False
 
 
@@ -54,7 +57,7 @@ def make_history(session_id: str) -> HistoryT:
             url=REDIS_URL,
             ttl=TTL_SECONDS,
         )
-    print(f"[memory] Using ephemeral in-memory history for session: {session_id}")
+    logger.info("Using ephemeral in-memory history for session %s", session_id)
     return EphemeralHistory()
 
 
