@@ -1,267 +1,375 @@
-# Project Structure
-_Last updated: 2026-03-22_
+# Codebase Structure
 
-## Summary
+**Analysis Date:** 2026-05-09
 
-FastAPI backend for an AI-powered Islamic education platform. The codebase is organized into discrete layers: thin API route handlers in `api/`, an agentic AI pipeline in `agents/` and `modules/`, shared utilities in `core/`, a full database layer in `db/`, and business services in `services/`. Tests are split between `tests/` (mock-based unit tests) and `agent_tests/` (integration tests requiring live services).
-
-## Top-Level Layout
+## Directory Layout
 
 ```
 deen-backend/
-├── main.py                     # FastAPI app factory, router registration, CORS config
-├── requirements.txt            # Pinned Python dependencies
-├── alembic.ini                 # Alembic configuration (URL injected from db/config.py)
-├── Dockerfile                  # Python 3.11-slim image, Gunicorn + UvicornWorker
-├── docker-compose.yml          # Services: api (FastAPI) + caddy (reverse proxy)
-├── .env                        # Local secrets (git-ignored)
-├── .gitignore
-├── CLAUDE.md                   # Developer guidance for Claude Code
-├── AGENTS.md                   # Agent system documentation
-├── IMPLEMENTATION_SUMMARY.md   # High-level feature implementation notes
-├── README.md                   # Project README
-├── api/                        # HTTP route handlers (thin layer, no business logic)
-├── agents/                     # LangGraph agent orchestration
-├── core/                       # Shared utilities: pipeline, auth, memory, config
+├── main.py                     # ASGI app entry point: routers, middleware, lifespan
+├── CLAUDE.md                   # Project instructions for Claude Code
+├── requirements.txt            # Pinned dependencies (committed)
+├── Dockerfile                  # python:3.11-slim, non-root appuser, encoder regen
+├── docker-compose.yml          # api service + caddy reverse proxy
+├── alembic.ini                 # Alembic config
+├── pytest.ini                  # Test runner config (asyncio_mode, markers)
+│
+├── api/                        # HTTP route handlers — thin, no business logic
+│   ├── chat.py                 # /chat/* (primary agentic + legacy endpoints)
+│   ├── reference.py            # /references (semantic reference lookup)
+│   ├── hikmah.py               # /hikmah/* (elaboration, quiz)
+│   ├── primers.py              # /primers (personalized primers)
+│   ├── onboarding.py           # /onboarding
+│   ├── account.py              # /account
+│   ├── feedback.py             # /feedback
+│   └── memory_admin.py         # /admin/memory
+│
+├── core/                       # Shared utilities and pipeline orchestration
+│   ├── pipeline_langgraph.py   # Active agentic pipeline (SSE streaming, token loop)
+│   ├── pipeline.py             # Legacy sync pipeline (/chat/, /references, /hikmah)
+│   ├── chat_models.py          # LLM factory functions by role (generator/classifier/etc.)
+│   ├── memory.py               # Async Redis history + sync shim
+│   ├── vectorstore.py          # Pinecone client wrappers (dense + sparse)
+│   ├── auth.py                 # Supabase JWKS fetch + auth dependency instances
+│   ├── config.py               # Env var loading (dotenv), startup guards
+│   ├── middleware.py           # CorrelationIdMiddleware (pure ASGI)
+│   ├── context.py              # ContextVar for correlation_id
+│   ├── sentry.py               # Sentry SDK init + bind_sentry_scope()
+│   ├── logging_config.py       # setup_logging(), ExtraFormatter, get_memory_logger()
+│   ├── prompt_templates.py     # Shared LangChain prompt templates
+│   └── utils.py                # format_references_as_json, compact_format_references, etc.
+│
+├── agents/                     # LangGraph agent layer
+│   ├── core/
+│   │   └── chat_agent.py       # ChatAgent class: StateGraph, nodes, routing, compile
+│   ├── state/
+│   │   ├── chat_state.py       # ChatState TypedDict + create_initial_state()
+│   │   └── fiqh_state.py       # FiqhState TypedDict for fiqh sub-graph
+│   ├── tools/
+│   │   ├── __init__.py         # Re-exports all tool functions
+│   │   ├── classification_tools.py   # check_if_non_islamic_tool, check_if_fiqh_tool
+│   │   ├── enhancement_tools.py      # enhance_query_tool
+│   │   ├── translation_tools.py      # translate_to_english_tool, translate_response_tool
+│   │   └── retrieval_tools.py        # retrieve_shia/sunni/combined/quran_tafsir tools
+│   ├── fiqh/
+│   │   └── fiqh_graph.py       # Compiled fiqh sub-graph (stateless, module-level singleton)
+│   ├── config/
+│   │   └── agent_config.py     # AgentConfig, RetrievalConfig, ModelConfig Pydantic models
+│   ├── prompts/
+│   │   └── agent_prompts.py    # AGENT_SYSTEM_PROMPT, EARLY_EXIT_* constants
+│   ├── models/                 # (currently empty / placeholder)
+│   ├── utils/                  # (currently empty / placeholder)
+│   └── workflows/              # (currently empty / placeholder)
+│
 ├── modules/                    # Discrete AI pipeline stages
-├── services/                   # Business logic services consumed by routes and agents
-├── db/                         # SQLAlchemy models, Pydantic schemas, repositories, CRUD
-├── alembic/                    # Database migration scripts
-├── models/                     # HTTP-layer Pydantic schemas and JWT bearer
-├── tests/                      # Mock-based unit/integration tests (pytest)
-├── agent_tests/                # Live-service integration tests
-├── scripts/                    # One-off operational scripts
-├── caddy/                      # Reverse proxy config (Caddyfile)
-├── documentation/              # Architecture, API, and deployment docs
-├── updates_documentation/      # Changelog and troubleshooting notes
+│   ├── classification/
+│   │   └── classifier.py       # aclassify_non_islamic_query(), aclassify_fiqh_query()
+│   ├── embedding/
+│   │   └── embedder.py         # getDenseEmbedder(), generate_sparse_embedding()
+│   ├── retrieval/
+│   │   └── retriever.py        # aretrieve_shia/sunni/quran_documents() + sync versions
+│   ├── reranking/
+│   │   └── reranker.py         # rerank_documents() — sync, called via asyncio.to_thread
+│   ├── enhancement/
+│   │   └── enhancer.py         # aenhance_query()
+│   ├── translation/
+│   │   └── translator.py       # atranslate_to_english(), atranslate_response()
+│   ├── generation/
+│   │   ├── generator.py        # generate_response() — sync, used by legacy pipeline
+│   │   └── stream_generator.py # generate_streaming_response() — sync, legacy pipeline
+│   ├── context/                # Context assembly utilities for legacy pipeline
+│   └── fiqh/                   # FAIR-RAG fiqh pipeline stages
+│       ├── classifier.py       # aclassify_fiqh_query() — 6-category LLM classifier
+│       ├── decomposer.py       # adecompose_query() — multi-part query splitting
+│       ├── retriever.py        # aretrieve_fiqh_documents() — BM25 + dense fiqh search
+│       ├── filter.py           # afilter_evidence() — relevance filtering
+│       ├── sea.py              # aassess_evidence(), SEAResult — sufficiency assessment
+│       ├── refiner.py          # arefine_query() — targeted gap-filling queries
+│       ├── generator.py        # Final answer synthesis; FATWA_DISCLAIMER, INSUFFICIENT_WARNING
+│       └── fair_rag.py         # run_fair_rag() — sync entry point (used outside LangGraph)
+│
+├── services/                   # Business services consumed by routes and pipeline
+│   ├── chat_persistence_service.py   # ChatSession/ChatMessage CRUD, Redis hydration
+│   ├── memory_service.py             # UserMemoryProfile + MemoryEvent persistence
+│   ├── consolidation_service.py      # Periodic memory consolidation logic
+│   ├── embedding_service.py          # User memory note embeddings
+│   ├── primer_service.py             # Baseline + personalized primer generation + cache
+│   ├── hikmah_quiz_service.py        # Hikmah elaboration, quiz logic
+│   └── account_service.py            # Account management
+│
+├── db/                         # Database layer
+│   ├── session.py              # Sync engine (psycopg2), SessionLocal, get_db()
+│   ├── async_session.py        # Async engine (asyncpg), AsyncSessionLocal, get_db_async()
+│   ├── config.py               # pydantic-settings Settings class, DATABASE_URL property
+│   ├── models/                 # SQLAlchemy ORM models (13 tables)
+│   │   ├── chat_sessions.py    # ChatSession (id, user_id, title, timestamps)
+│   │   ├── chat_messages.py    # ChatMessage (session_id FK, role, content)
+│   │   ├── users.py            # User model
+│   │   ├── lessons.py          # Lesson, with baseline_primer field
+│   │   ├── lesson_content.py   # LessonContent
+│   │   ├── lesson_page_quiz_questions.py  # Quiz question model
+│   │   ├── lesson_page_quiz_choices.py    # Quiz choice model
+│   │   ├── lesson_page_quiz_attempts.py   # Quiz attempt model
+│   │   ├── user_progress.py    # UserProgress
+│   │   ├── hikmah_trees.py     # HikmahTree
+│   │   ├── personalized_primers.py  # PersonalizedPrimer cache
+│   │   ├── embeddings.py       # User note embeddings (768-dim pgvector)
+│   │   └── user_onboarding_profiles.py  # UserOnboardingProfile
+│   ├── schemas/                # Pydantic schemas for API request/response
+│   │   ├── users.py
+│   │   ├── lessons.py
+│   │   ├── user_progress.py
+│   │   ├── personalized_primers.py
+│   │   └── chat_history.py     # SavedChatListResponse, SavedChatDetailResponse
+│   ├── repositories/           # Repository pattern for complex queries
+│   │   ├── memory_profile_repository.py
+│   │   ├── memory_event_repository.py
+│   │   └── memory_consolidation_repository.py
+│   ├── routers/                # CRUD FastAPI routers (sync sessions)
+│   │   ├── users.py
+│   │   ├── lessons.py
+│   │   ├── lesson_content.py
+│   │   ├── user_progress.py
+│   │   └── hikmah_trees.py
+│   ├── crud/                   # Thin CRUD helpers
+│   │   └── base.py             # Generic CRUDBase[ModelType, CreateSchema, UpdateSchema]
+│   └── utils/                  # DB utility helpers
+│
+├── models/                     # Root-level Pydantic schemas and auth models
+│   ├── schemas.py              # ChatRequest, ElaborationRequest, ReferenceRequest, etc.
+│   └── JWTBearer.py            # JWTBearer, DevBypassBearer, JWKS, JWTAuthorizationCredentials
+│
+├── alembic/                    # DB migrations
+│   ├── env.py
+│   └── versions/               # 11 migration files
+│       ├── 0000_initial_schema.py
+│       ├── 20260305_create_chat_history_tables.py
+│       ├── 20260407_create_memory_agent_tables.py
+│       └── ...
+│
+├── tests/                      # Primary test suite (pytest)
+│   ├── conftest.py             # Fixtures, stubs, mock factories
+│   ├── conftest_async_stubs.py # Async stub implementations
+│   ├── __snapshots__/          # syrupy SSE snapshot files
+│   ├── test_agentic_streaming_sse.py
+│   ├── test_async_concurrency_full.py   # DEE-46: concurrency gate (>=3x p95 baseline)
+│   ├── test_sse_event_order_snapshot.py # DEE-46: SSE event order snapshots
+│   ├── test_sentry_async_propagation.py # DEE-46: per-coroutine Sentry scope isolation
+│   ├── test_real_llm_perf.py           # DEE-46: real LLM perf (marker: real_llm)
+│   ├── test_fiqh_*.py                   # Fiqh subsystem tests (unit + integration)
+│   ├── test_chat_persistence_service.py
+│   ├── test_chat_agent_async.py
+│   └── db/                              # DB compatibility tests (requires Postgres)
+│
+├── agent_tests/                # Integration tests run as scripts
+│   └── test_memory_agent.py
+│
+├── scripts/                    # One-off and ingestion scripts
+│   ├── ingest_fiqh.py          # Parse PDF + embed + upsert to Pinecone fiqh indexes
+│   └── loadtest_agentic.py     # In-process concurrency load test (N=10)
+│
+├── data/                       # Runtime data (gitignored artifacts)
+│   └── fiqh_bm25_encoder.json  # GITIGNORED — regenerated by Dockerfile or --encoder-only
+│
+├── documentation/              # Internal design docs
+│   ├── async_baseline.md       # DEE-36 concurrency snapshots (phase-0 → phase-7)
+│   └── fiqh_related_docs/
+│
+├── caddy/
+│   └── Caddyfile               # Reverse proxy config (deen-fastapi.duckdns.org)
+│
+├── .github/
+│   └── workflows/
+│       └── deploy-dev.yml      # DEE-47: CI/CD main → dev Hetzner deploy pipeline
+│
 └── .planning/                  # GSD planning artifacts (not deployed)
+    ├── codebase/               # This document and sibling analysis docs
+    └── milestones/             # Phase plans
 ```
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `main.py` | App entry point. Creates the `FastAPI` instance, registers all routers, configures CORS from `CORS_ALLOW_ORIGINS` env var, attaches a global exception-catching middleware, and exposes `/_debug/db`, `/_routes`, `/`, and `/health` utility endpoints. |
-| `requirements.txt` | Fully pinned dependency list. Notable packages: `fastapi`, `langgraph`, `langchain`, `openai`, `pinecone`, `redis`, `SQLAlchemy`, `asyncpg`, `psycopg2-binary`, `alembic`, `pytest`, `sentence-transformers`. |
-| `alembic.ini` | Alembic runner config. The `sqlalchemy.url` placeholder is overridden at runtime by `alembic/env.py` using `db/config.py:Settings`. |
-| `Dockerfile` | Builds a `python:3.11-slim` image, runs as a non-root `appuser`, starts with `gunicorn -k uvicorn.workers.UvicornWorker -w 2`. |
-| `docker-compose.yml` | Defines two services: `api` (FastAPI app on port 8000, not exposed publicly) and `caddy` (reverse proxy on 80/443). |
-| `caddy/Caddyfile` | Routes `deen-fastapi.duckdns.org` → `api:8000` with gzip compression. |
 
 ## Directory Purposes
 
-### `api/`
-Thin FastAPI `APIRouter` modules. Each file maps to a feature domain. No business logic—delegates to `services/`, `core/`, or `modules/`.
+**`api/`:**
+- Purpose: One file per feature domain; thin route handlers only — parse, validate, call pipeline or service, return
+- Contains: `async def` route handlers, `Depends(auth)`, `Depends(get_db_async)` or `Depends(get_db)`, `HTTPException` raises
+- Key files: `api/chat.py` (primary endpoint), `api/reference.py`, `api/hikmah.py`
+- Rule: No business logic here; maximum 30-40 lines per handler body
 
-- `api/chat.py` — `/chat/*` endpoints: legacy non-streaming, agentic streaming SSE (`/chat/stream/agentic`), non-streaming agentic (`/chat/agentic`), and saved chat retrieval.
-- `api/reference.py` — `/references` semantic reference lookup with sect filtering.
-- `api/hikmah.py` — `/hikmah/elaborate` elaboration endpoint.
-- `api/account.py` — Account-related routes.
-- `api/primers.py` — `/primers` personalized primer retrieval.
-- `api/memory_admin.py` — `/admin/memory` memory admin dashboard.
+**`core/`:**
+- Purpose: Shared infrastructure and pipeline orchestration
+- Contains: Active pipeline (`pipeline_langgraph.py`), legacy pipeline (`pipeline.py`), all cross-cutting utilities
+- Key files: `core/pipeline_langgraph.py`, `core/memory.py`, `core/vectorstore.py`, `core/config.py`
+- Note: `core/pipeline.py` is legacy — new endpoint work goes to `core/pipeline_langgraph.py`
 
-### `core/`
-Shared infrastructure used across `api/`, `agents/`, and `services/`.
+**`agents/`:**
+- Purpose: LangGraph agent orchestration, state schemas, tool definitions, fiqh sub-graph, config
+- Contains: `core/chat_agent.py` (ChatAgent), `state/`, `tools/`, `fiqh/`, `config/`, `prompts/`
+- Key files: `agents/core/chat_agent.py`, `agents/fiqh/fiqh_graph.py`, `agents/state/chat_state.py`
 
-- `core/config.py` — Loads all environment variables via `python-dotenv`. Central source for `OPENAI_API_KEY`, `PINECONE_API_KEY`, `REDIS_*`, `COGNITO_*`, `LARGE_LLM`, `SMALL_LLM`, database URLs, embedding config, and similarity thresholds.
-- `core/pipeline_langgraph.py` — Active agentic pipeline. Wraps `agents/core/chat_agent.py` as a LangGraph graph, emits SSE events with node/tool status messages.
-- `core/pipeline.py` — Legacy hardcoded pipeline (non-agentic). Kept for reference.
-- `core/auth.py` — Fetches Cognito JWKS and constructs a `JWTBearer` instance.
-- `core/memory.py` — Low-level Redis access: stores/retrieves per-user conversation history under `REDIS_KEY_PREFIX`.
-- `core/vectorstore.py` — Initializes Pinecone dense and sparse index clients.
-- `core/prompt_templates.py` — Prompt strings for the LLM.
-- `core/logging_config.py` — `setup_logging()` and `get_memory_logger()`. Uses a custom `ExtraFormatter` that colorizes log levels and appends extra key=value fields.
-- `core/constants.py` — Project-wide constant definitions.
-- `core/utils.py` — Shared utility functions.
-- `core/chat_models.py` — Pydantic models shared across pipeline layers.
+**`modules/`:**
+- Purpose: Discrete AI processing stages; each module is independently testable
+- Contains: `classification/`, `embedding/`, `retrieval/`, `reranking/`, `enhancement/`, `translation/`, `generation/`, `fiqh/`
+- Pattern: Each module exposes an `async def a<function_name>()` and a sync `def <function_name>()` fallback
+- Key files: `modules/retrieval/retriever.py`, `modules/fiqh/sea.py`, `modules/fiqh/generator.py`
 
-### `agents/`
-LangGraph agent orchestration layer.
+**`services/`:**
+- Purpose: Business services — DB persistence, memory operations, primer generation
+- Contains: One service class or module per domain concern
+- Key files: `services/chat_persistence_service.py` (most critical — hydrates Redis, wraps streaming)
 
-- `agents/core/chat_agent.py` — Primary agent. Builds and runs the LangGraph graph; decides which tools to invoke.
-- `agents/core/memory_consolidator.py` — Agent that consolidates conversation history into long-term memory notes.
-- `agents/core/universal_memory_agent.py` — General-purpose memory agent.
-- `agents/tools/classification_tools.py` — LangGraph-compatible wrappers for `modules/classification/`.
-- `agents/tools/retrieval_tools.py` — LangGraph-compatible wrappers for `modules/retrieval/`.
-- `agents/tools/enhancement_tools.py` — LangGraph-compatible wrappers for `modules/enhancement/`.
-- `agents/tools/translation_tools.py` — LangGraph-compatible wrappers for `modules/translation/`.
-- `agents/state/chat_state.py` — `TypedDict` defining the graph state passed between nodes.
-- `agents/config/agent_config.py` — `AgentConfig` and `RetrievalConfig` Pydantic models; `DEFAULT_AGENT_CONFIG` constant.
-- `agents/prompts/agent_prompts.py` — System prompts for the agent.
-- `agents/prompts/memory_prompts.py` — Prompts for memory consolidation.
-- `agents/prompts/note_templates.py` — Templates for memory note generation.
-- `agents/models/user_memory_models.py` — Pydantic models for user memory data.
-- `agents/models/db_config.py` — Database config specific to the agents layer.
+**`db/`:**
+- Purpose: All database concerns — ORM models, schemas, sessions, CRUD, migrations
+- Critical split: `db/session.py` (sync psycopg2) vs `db/async_session.py` (async asyncpg)
+- Key files: `db/models/chat_sessions.py`, `db/models/chat_messages.py`, `db/async_session.py`
 
-### `modules/`
-Stateless AI pipeline stages. Each subdirectory contains one or two Python files implementing a single processing step.
+**`models/`:**
+- Purpose: Root-level Pydantic schemas for API request/response and auth bearer
+- Contains: `models/schemas.py` (all request/response models), `models/JWTBearer.py`
+- Note: Separate from `db/schemas/` which are DB-specific Pydantic schemas
 
-| Module | File(s) | Responsibility |
-|--------|---------|---------------|
-| `modules/classification/` | `classifier.py` | Classifies query type (Islamic vs. non-Islamic, fiqh routing) |
-| `modules/embedding/` | `embedder.py`, `proprecessor.py` | Generates dense + sparse embeddings |
-| `modules/retrieval/` | `retriever.py` | Queries Pinecone indices |
-| `modules/reranking/` | `reranker.py` | Reranks retrieved documents |
-| `modules/generation/` | `generator.py`, `stream_generator.py` | Generates LLM responses (sync and streaming) |
-| `modules/translation/` | `translator.py` | Translates queries to English |
-| `modules/enhancement/` | `enhancer.py` | Post-processes generated responses |
-| `modules/context/` | `context.py` | Builds context strings from retrieved documents |
+**`alembic/versions/`:**
+- Purpose: Sequential DB migration scripts (11 files); always run `alembic upgrade head` after pulling
+- Generated: No; committed manually
+- Committed: Yes
 
-### `services/`
-Business logic layer. Consumed by route handlers and agents.
+**`data/`:**
+- Purpose: Runtime binary/JSON artifacts; all gitignored
+- Key file: `data/fiqh_bm25_encoder.json` — BM25 sparse encoder for fiqh retrieval; regenerated by `python scripts/ingest_fiqh.py --encoder-only`
 
-- `services/chat_persistence_service.py` — Saves and retrieves chat sessions from the database.
-- `services/memory_service.py` — High-level memory operations (read/write user memory).
-- `services/consolidation_service.py` — Triggers memory consolidation jobs.
-- `services/embedding_service.py` — Manages embedding storage and lookup.
-- `services/primer_service.py` — Generates and caches personalized primers.
-- `services/hikmah_quiz_service.py` — Business logic for Hikmah page quizzes.
-- `services/account_service.py` — Account-related business logic.
+**`tests/`:**
+- Purpose: Primary pytest suite — unit tests and stub-driven integration tests
+- Key files: `tests/conftest.py`, `tests/test_async_concurrency_full.py`, `tests/test_fiqh_integration.py`
+- Special: `tests/db/` requires a reachable Postgres instance; excluded from default `pytest tests -q`
 
-### `db/`
-Full database layer using SQLAlchemy.
+## Key File Locations
 
-- `db/config.py` — `pydantic-settings` `Settings` class; builds `DATABASE_URL` from individual `DB_*` env vars. Used by `db/session.py` and `alembic/env.py`.
-- `db/session.py` — Sync SQLAlchemy engine + `SessionLocal` factory + `get_db()` dependency. Uses `sslmode=require`.
-- `db/models/` — 13 SQLAlchemy ORM model files (one per table):
-  - `users.py`, `chat_sessions.py`, `chat_messages.py`, `embeddings.py`
-  - `lessons.py`, `lesson_content.py`, `user_progress.py`
-  - `hikmah_trees.py`, `personalized_primers.py`
-  - `lesson_page_quiz_questions.py`, `lesson_page_quiz_choices.py`, `lesson_page_quiz_attempts.py`
-- `db/schemas/` — Pydantic response/request schemas for database entities (separate from `models/schemas.py`).
-  - `chat_history.py`, `hikmah_trees.py`, `lesson_content.py`, `lessons.py`, `personalized_primers.py`, `user_progress.py`, `users.py`
-- `db/repositories/` — Repository pattern for memory-related tables:
-  - `memory_consolidation_repository.py`, `memory_event_repository.py`, `memory_profile_repository.py`
-- `db/routers/` — CRUD `APIRouter` modules mounted directly in `main.py`:
-  - `users.py`, `lessons.py`, `lesson_content.py`, `user_progress.py`, `hikmah_trees.py`
-- `db/crud/` — Low-level CRUD helper functions:
-  - `base.py`, `users.py`, `lessons.py`, `lesson_content.py`, `hikmah_trees.py`, `personalized_primers.py`, `user_progress.py`
-- `db/utils/` — Database utility helpers.
+**Entry Points:**
+- `main.py`: ASGI app definition, all router registration, middleware stack, lifespan hook
+- `main.py:lifespan()`: Supabase config validation + fiqh BM25 encoder startup warning
 
-### `alembic/`
-Migration management.
+**Primary Chat Path:**
+- `api/chat.py:chat_pipeline_agentic_ep()`: `/chat/stream/agentic` handler
+- `core/pipeline_langgraph.py:chat_pipeline_streaming_agentic()`: SSE generator
+- `agents/core/chat_agent.py:ChatAgent`: LangGraph graph definition and execution
+- `agents/state/chat_state.py:create_initial_state()`: State factory — always use this
 
-- `alembic/env.py` — Injects the real `DATABASE_URL` from `db/config.py:Settings` at migration time.
-- `alembic/versions/` — 7 migration scripts (chronological):
-  1. `20251008_rename_user_id_to_text.py`
-  2. `20260119_add_baseline_primers_to_lessons.py`
-  3. `20260119_create_personalized_primers_table.py`
-  4. `20260122_create_embedding_tables.py`
-  5. `20260218_create_lesson_page_quiz_tables.py`
-  6. `20260305_create_chat_history_tables.py`
-  7. `a12c6d22b9d9_make_hikmah_tree_id_nullable.py`
+**Fiqh Sub-graph:**
+- `agents/fiqh/fiqh_graph.py:fiqh_subgraph`: Module-level compiled graph singleton
+- `agents/state/fiqh_state.py:FiqhState`: Sub-graph state schema
+- `modules/fiqh/sea.py`: SEAResult, `aassess_evidence()` — determines loop exit
+- `modules/fiqh/generator.py`: FATWA_DISCLAIMER, INSUFFICIENT_WARNING, final synthesis
 
-### `models/`
-HTTP-layer models (distinct from `db/models/`).
+**Database Sessions:**
+- `db/async_session.py:get_db_async()`: Async session — use for chat endpoints
+- `db/session.py:get_db()`: Sync session — use for all other endpoints (for now)
+- `db/config.py:Settings`: Pydantic settings for DB credentials
 
-- `models/schemas.py` — Pydantic request/response models for API endpoints: `ChatRequest`, `ElaborationRequest`, `ReferenceRequest`, `PersonalizedPrimerRequest/Response`, quiz request/response models.
-- `models/JWTBearer.py` — `JWTBearer` FastAPI dependency and `JWKS` model for Cognito token validation.
+**Configuration:**
+- `core/config.py`: All env vars loaded via dotenv; startup guards for required keys
+- `agents/config/agent_config.py:DEFAULT_AGENT_CONFIG`: Default agent config instance
+- `agents/config/agent_config.py:AgentConfig.from_dict()`: Parse per-request config overrides
 
-### `tests/`
-Pytest test suite. Mock-based; does not require live external services by default.
+**Memory:**
+- `core/memory.py:amake_history()`: Async entry point — use this in new code
+- `core/memory.py:make_history()`: Sync shim — legacy use only
+- `services/chat_persistence_service.py:build_runtime_session_id()`: `{user_id}:{session_id}` key builder
 
-- `tests/test_agentic_streaming_pipeline.py` — Agentic pipeline streaming tests.
-- `tests/test_agentic_streaming_sse.py` — SSE endpoint tests.
-- `tests/test_chat_persistence_service.py` — Chat save/load service tests.
-- `tests/test_embedding_service.py` — Embedding service tests.
-- `tests/test_hikmah_quiz_service.py` — Quiz service tests.
-- `tests/test_primer_service.py` — Primer service tests.
-- `tests/db/` — Database compatibility tests that require `DATABASE_URL`:
-  - `test_baseline_primers_compatibility.py`
-  - `test_db_premiers_table.py`
+**Authentication:**
+- `core/auth.py:auth`: Single dependency instance — import `auth` not `JWTBearer` directly
+- `models/JWTBearer.py:DevBypassBearer`: Dev-mode passthrough; auto-selected by `core/auth.py`
 
-### `agent_tests/`
-Integration tests requiring live external services (Redis, Pinecone, OpenAI).
+**Testing:**
+- `tests/conftest.py`: Mock factories for LLM, Pinecone, Redis
+- `tests/conftest_async_stubs.py`: Async stub implementations
+- `tests/__snapshots__/`: syrupy snapshot files for SSE event order tests
 
-- `agent_tests/test_memory_agent.py` — Memory agent integration test.
-- `agent_tests/test_consolidation.py`, `test_realistic_memory.py`, `test_universal_memory.py` — Memory system integration tests.
-- `agent_tests/test_db_connection.py` — Database connectivity check.
-- Other debug and threading test files.
+## Naming Conventions
 
-### `scripts/`
-One-off operational scripts, not part of the application runtime.
+**Files:**
+- All lowercase with underscores: `chat_persistence_service.py`, `pipeline_langgraph.py`
+- Exception: `models/JWTBearer.py` (PascalCase, matches class name)
+- Module directories are short lowercase: `api/`, `agents/`, `core/`, `modules/`
 
-- `scripts/generate_primers.py` — Batch-generates primers for lessons.
-- `scripts/migrate_embeddings.py` — Migrates embedding data.
-- `scripts/set_baseline_primers.py` — Seeds baseline primer content.
+**Functions:**
+- `snake_case`: `generate_response`, `retrieve_shia_documents`, `build_runtime_session_id`
+- Async variants prefixed with `a`: `aclassify_fiqh_query`, `amake_history`, `aretrieve_shia_documents`
+- Private helpers prefixed with `_`: `_extract_user_id`, `_fiqh_classification_node`, `_build_graph`
+- LangGraph tools use descriptive verb phrases: `enhance_query_tool`, `retrieve_shia_documents_tool`
 
-### `documentation/`
-Developer-facing Markdown documentation.
+**Classes:** `PascalCase`: `ChatAgent`, `ChatState`, `FiqhState`, `AgentConfig`, `AsyncRedisChatMessageHistory`
 
-- `documentation/AI_PIPELINE.md`, `ARCHITECTURE.md`, `API_REFERENCE.md`
-- `documentation/AUTHENTICATION.md`, `DEPLOYMENT.md`, `DATABASE.md`
-- `documentation/CHATBOT.md`, `MEMORY_AGENT.md`, `HIKMAH_TREES.md`
-- `documentation/Agentic_chatbot_API_integration.md`
-- `documentation/fiqh_related_docs/` — Fiqh classification documentation.
-- `documentation/new_feature_plans/` — Planned feature specs.
+**Constants:** `UPPER_SNAKE_CASE`: `FATWA_DISCLAIMER`, `REFERENCES_MARKER`, `DEFAULT_AGENT_CONFIG`, `VALID_FIQH_CATEGORIES`
 
-## Configuration Files
-
-| File | Purpose |
-|------|---------|
-| `.env` | All secrets and environment-specific values (git-ignored). See `core/config.py` for the full list of variables read. |
-| `core/config.py` | Primary env loader using `python-dotenv`. Read by most application modules. |
-| `db/config.py` | Pydantic-settings `Settings` for database connection. Accepts `DB_USER/POSTGRES_USER/PGUSER` aliasing. |
-| `alembic.ini` | Alembic runner settings. URL is overridden at runtime; do not edit `sqlalchemy.url` directly. |
-| `agents/config/agent_config.py` | `AgentConfig` and `RetrievalConfig` Pydantic models controlling LangGraph agent behavior (document counts, LLM model selection). |
-| `docker-compose.yml` | Container orchestration for local or server deployment. |
-| `caddy/Caddyfile` | TLS termination and reverse proxy config for production. |
-
-## Entry Points
-
-**Development:**
-```bash
-uvicorn main:app --reload
-# or with explicit port/host:
-uvicorn main:app --port 8080 --reload --host 0.0.0.0
-```
-
-**Production (Docker):**
-```bash
-docker compose build --no-cache && docker compose up -d
-# Internally runs: gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 main:app
-```
-
-The `FastAPI` app object is `app` in `main.py`. All routers are registered there.
-
-**Primary chat endpoint:** `POST /chat/stream/agentic` — SSE streaming, goes through `api/chat.py` → `core/pipeline_langgraph.py` → `agents/core/chat_agent.py` → tools in `agents/tools/` → stages in `modules/`.
-
-## Notable Patterns in File Organization
-
-**Dual config system:** `core/config.py` (dotenv-based, used by AI/Redis/Pinecone modules) and `db/config.py` (pydantic-settings, used by SQLAlchemy and Alembic). These are separate and must both be kept consistent.
-
-**Dual schema directories:** `models/schemas.py` holds HTTP-layer Pydantic models (request/response shapes for API clients). `db/schemas/` holds Pydantic models for database entity serialization. These serve different purposes and should not be merged.
-
-**Module-per-pipeline-stage:** Each stage in `modules/` is a directory with a single Python file (e.g., `modules/classification/classifier.py`). New pipeline stages follow this pattern.
-
-**Tool wrappers pattern:** `agents/tools/` files wrap `modules/` functions as LangGraph-compatible tools. When adding a new pipeline stage, add a corresponding tool wrapper here.
-
-**Test separation by dependency:** `tests/` uses mocks (no external services needed). `tests/db/` requires `DATABASE_URL`. `agent_tests/` requires all live services. Run only `pytest tests -q` in CI; the other suites are for local integration validation.
-
-**`__init__.py` presence is inconsistent:** Some `db/` subdirs use `__int__.py` (typo — note the missing `i`). This is a known quirk; do not replicate it in new directories.
+**DB models:** `PascalCase` class names, `snake_case` for `__tablename__` and column names
 
 ## Where to Add New Code
 
+**New agentic tool:**
+- Implementation: `agents/tools/<domain>_tools.py` — `@tool async def <name>_tool()`
+- Module logic: `modules/<domain>/<name>.py` — `async def a<name>()` + sync fallback
+- Register: Add to `self.tools` list in `agents/core/chat_agent.py:ChatAgent.__init__()`
+- Tests: `tests/test_<domain>_tool.py` with mocked module calls
+
+**New LangGraph graph node:**
+- Add `async def _<name>_node(self, state: ChatState) -> dict:` in `agents/core/chat_agent.py`
+- Register: `workflow.add_node("<name>", self._<name>_node)` in `_build_graph()`
+- Add edges to `_build_graph()` and routing logic to `_should_continue()` or a new routing function
+- Add SSE status message to `NODE_STATUS_MESSAGES` in `core/pipeline_langgraph.py`
+
 **New API endpoint:**
-- Route handler: `api/<domain>.py`
-- Register router in: `main.py`
+- Determine domain: new file in `api/<domain>.py` or add to existing domain file
+- Register: `app.include_router(<domain>.router)` in `main.py`
+- Use `Depends(get_db_async)` for any DB access (not `Depends(get_db)` for new endpoints)
+- Use `Depends(auth)` for all protected routes
 
-**New business logic:**
-- Implementation: `services/<domain>_service.py`
+**New DB model:**
+- ORM model: `db/models/<table_name>.py` — inherit `Base` from `db/session.py`
+- Schema: `db/schemas/<domain>.py` — Pydantic models for request/response
+- Migration: `alembic revision --autogenerate -m "<description>"` then edit and run `alembic upgrade head`
 
-**New AI pipeline stage:**
-- Core logic: `modules/<stage_name>/<stage_name>.py`
-- LangGraph tool wrapper: `agents/tools/<stage_name>_tools.py`
+**New fiqh pipeline stage:**
+- Module: `modules/fiqh/<stage>.py` with `async def a<stage>()` function
+- Sub-graph node: `async def _<stage>_node(state: FiqhState) -> dict:` in `agents/fiqh/fiqh_graph.py`
+- Register: Add node + edge in `_fiqh_builder` builder at bottom of `agents/fiqh/fiqh_graph.py`
+- Status event: Append `{"step": "fiqh_<stage>", "message": "..."}` to `state["status_events"]`
 
-**New database table:**
-- ORM model: `db/models/<table_name>.py`
-- Pydantic schema: `db/schemas/<table_name>.py`
-- CRUD helpers: `db/crud/<table_name>.py`
-- Migration: `alembic/versions/YYYYMMDD_<description>.py` (run `alembic revision --autogenerate -m "<description>"`)
+**New service:**
+- File: `services/<domain>_service.py`
+- Pattern: Plain functions (not class methods for simple cases); use `AsyncSession` for DB access
+- Consume in routes via direct import: `from services import <domain>_service`
 
-**New unit test:**
-- File: `tests/test_<module>.py`
-- DB-dependent test: `tests/db/test_<module>.py`
+**Shared utility:**
+- Format helpers: `core/utils.py`
+- Prompt templates: `core/prompt_templates.py`
+- Config values: `core/config.py` (loaded from `.env`)
 
-**New integration test:**
-- File: `agent_tests/test_<feature>.py`
+## Special Directories
+
+**`.planning/`:**
+- Purpose: GSD workflow planning artifacts (phase plans, codebase analysis docs)
+- Generated: Partially (by GSD commands)
+- Committed: Yes
+
+**`data/`:**
+- Purpose: Runtime-generated binary/JSON artifacts not suitable for git
+- Generated: Yes (by `scripts/ingest_fiqh.py --encoder-only` or Dockerfile)
+- Committed: No — gitignored
+
+**`venv/`:**
+- Purpose: Python virtual environment
+- Generated: Yes (by `python3 -m venv venv`)
+- Committed: No — gitignored
+
+**`alembic/versions/`:**
+- Purpose: Committed migration scripts; each file is a versioned schema change
+- Generated: Partially (`alembic revision --autogenerate` scaffolds, then hand-edited)
+- Committed: Yes — always commit migration files
+
+**`tests/__snapshots__/`:**
+- Purpose: syrupy snapshot files for SSE event-order regression tests (`test_sse_event_order_snapshot.py`)
+- Generated: Yes (on first run or `--snapshot-update`)
+- Committed: Yes — snapshots are the regression baseline
+
+---
+
+*Structure analysis: 2026-05-09*
