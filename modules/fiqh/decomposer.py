@@ -7,10 +7,14 @@ optimised for retrieval from Ayatollah Sistani's "Islamic Laws" (4th edition).
 
 from __future__ import annotations
 import json
+import logging
 
 from langchain_core.messages import HumanMessage
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You decompose a user's Islamic fiqh question into 1-4 independent, keyword-rich sub-queries for retrieval from Ayatollah Sistani's "Islamic Laws" (4th edition).
@@ -46,9 +50,28 @@ def _build_messages(query: str) -> list:
     ]
 
 
+def _parse_subqueries(content: str, fallback_query: str) -> list[str]:
+    if content.startswith("```"):
+        parts = content.split("```")
+        content = parts[1] if len(parts) > 1 else content
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+    try:
+        sub_queries = json.loads(content)
+    except Exception:
+        return [fallback_query]
+    if not isinstance(sub_queries, list) or not sub_queries:
+        return [fallback_query]
+    return [str(q).strip() for q in sub_queries[:4] if str(q).strip()] or [fallback_query]
+
+
 def decompose_query(query: str) -> list[str]:
     """
-    Decomposes a fiqh query into 1-4 keyword-rich sub-queries using the configured LLM (SMALL_LLM).
+    Sync variant kept for legacy callers. Prefer `adecompose_query` from
+    inside an event loop (DEE-44).
+
+    Decomposes a fiqh query into 1-4 keyword-rich sub-queries.
     Falls back to [query] on any parse error or unexpected output.
 
     Returns:
@@ -57,17 +80,25 @@ def decompose_query(query: str) -> list[str]:
     try:
         model = chat_models.get_classifier_model()
         response = model.invoke(_build_messages(query))
-        content = response.content.strip()
-        # Strip markdown code fences if LLM wraps output
-        if content.startswith("```"):
-            parts = content.split("```")
-            content = parts[1] if len(parts) > 1 else content
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-        sub_queries = json.loads(content)
-        if not isinstance(sub_queries, list) or not sub_queries:
-            return [query]
-        return [str(q).strip() for q in sub_queries[:4] if str(q).strip()]
+        return _parse_subqueries(response.content.strip(), query)
     except Exception:
+        return [query]
+
+
+@anthropic_retry
+async def _adecompose_query_call(query: str):
+    model = chat_models.get_classifier_model()
+    return await model.ainvoke(_build_messages(query))
+
+
+async def adecompose_query(query: str) -> list[str]:
+    """Native async variant of `decompose_query`."""
+    try:
+        response = await _adecompose_query_call(query)
+        return _parse_subqueries(response.content.strip(), query)
+    except Exception:
+        logger.error(
+            "[FIQH_DECOMPOSER] adecompose_query failed after retries, falling back to original query",
+            exc_info=True,
+        )
         return [query]

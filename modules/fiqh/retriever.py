@@ -12,16 +12,17 @@ Architecture:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import traceback
 from pathlib import Path
 
 from pinecone_text.sparse import BM25Encoder
 
 from core.config import DEEN_FIQH_DENSE_INDEX_NAME, DEEN_FIQH_SPARSE_INDEX_NAME
+from core.resilience import pinecone_retry
 from core.vectorstore import _get_sparse_vectorstore
 from modules.embedding.embedder import getDenseEmbedder
-from modules.fiqh.decomposer import decompose_query
+from modules.fiqh.decomposer import adecompose_query, decompose_query
 
 logger = logging.getLogger(__name__)
 
@@ -130,28 +131,20 @@ def _retrieve_for_sub_query(sub_query: str) -> list[dict]:
 
         return _rrf_merge(dense_matches, sparse_matches, k=60, top_n=5)
 
-    except Exception as e:
-        logger.error("[FIQH_RETRIEVER] sub-query retrieval error: %s\n%s", e, traceback.format_exc())
+    except Exception:
+        logger.error("[FIQH_RETRIEVER] sub-query retrieval error", exc_info=True)
         return []
 
 
 def retrieve_fiqh_documents(query: str) -> list[dict]:
     """
-    Public interface for Phase 3 evidence assessment.
+    Sync variant kept for legacy callers. Prefer `aretrieve_fiqh_documents`
+    from inside an event loop (DEE-44).
 
     Decomposes the query into sub-queries, retrieves top-5 per sub-query via
     hybrid dense+sparse search with RRF merging, deduplicates by chunk_id.
 
-    Args:
-        query: Original fiqh query string
-
-    Returns:
-        list[dict]: Up to 20 unique documents, each with:
-            - chunk_id (str): Pinecone vector ID (e.g. "ruling_0712_chunk0")
-            - metadata (dict): source_book, chapter, section, ruling_number, topic_tags, text_en
-            - page_content (str): The ruling text (same as metadata["text_en"])
-
-        Returns [] on total failure. Never raises.
+    Returns up to 20 unique documents on success; [] on total failure.
     """
     try:
         sub_queries = decompose_query(query)
@@ -163,6 +156,81 @@ def retrieve_fiqh_documents(query: str) -> list[dict]:
                     seen.add(doc["chunk_id"])
                     result.append(doc)
         return result[:20]
-    except Exception as e:
-        logger.error("[FIQH_RETRIEVER] retrieve_fiqh_documents error: %s", e)
+    except Exception:
+        logger.error("[FIQH_RETRIEVER] retrieve_fiqh_documents error", exc_info=True)
+        return []
+
+
+@pinecone_retry
+async def _afiqh_dense_query(dense_index, dense_vec):
+    return await asyncio.to_thread(
+        dense_index.query,
+        vector=dense_vec,
+        top_k=20,
+        include_metadata=True,
+        namespace="ns1",
+    )
+
+
+@pinecone_retry
+async def _afiqh_sparse_query(sparse_index, sparse_vec):
+    return await asyncio.to_thread(
+        sparse_index.query,
+        sparse_vector=sparse_vec,
+        top_k=20,
+        include_metadata=True,
+        namespace="ns1",
+    )
+
+
+async def _aretrieve_for_sub_query(sub_query: str) -> list[dict]:
+    """Async variant of `_retrieve_for_sub_query`. CPU-bound bits (dense
+    embedding via sentence-transformers, BM25 sparse encoding) and the sync
+    Pinecone v1 .query() call are offloaded to a thread until PineconeAsyncio
+    is adopted; the dense and sparse Pinecone calls fire concurrently."""
+    try:
+        # Dense embedding: HuggingFaceEmbeddings.aembed_query handles the
+        # CPU work via LangChain's executor.
+        dense_vec = await getDenseEmbedder().aembed_query(sub_query)
+        encoder = _get_bm25_encoder()
+        sparse_vec = await asyncio.to_thread(encoder.encode_queries, sub_query)
+
+        dense_index = _get_sparse_vectorstore(DEEN_FIQH_DENSE_INDEX_NAME)
+        sparse_index = _get_sparse_vectorstore(DEEN_FIQH_SPARSE_INDEX_NAME)
+
+        dense_response, sparse_response = await asyncio.gather(
+            _afiqh_dense_query(dense_index, dense_vec),
+            _afiqh_sparse_query(sparse_index, sparse_vec),
+        )
+        dense_matches = dense_response.matches if hasattr(dense_response, "matches") else \
+                        dense_response.get("matches", [])
+        sparse_matches = sparse_response.matches if hasattr(sparse_response, "matches") else \
+                         sparse_response.get("matches", [])
+
+        return _rrf_merge(dense_matches, sparse_matches, k=60, top_n=5)
+    except Exception:
+        logger.error("[FIQH_RETRIEVER] async sub-query retrieval failed after retries", exc_info=True)
+        return []
+
+
+async def aretrieve_fiqh_documents(query: str) -> list[dict]:
+    """Native async variant of `retrieve_fiqh_documents`. Sub-queries are
+    decomposed once via `adecompose_query`, then per-sub-query retrievals run
+    concurrently via `asyncio.gather` — a 4-sub-query decomposition that
+    previously paid 4× round-trip latency now pays ~1×."""
+    try:
+        sub_queries = await adecompose_query(query)
+        per_sub_results = await asyncio.gather(
+            *[_aretrieve_for_sub_query(sq) for sq in sub_queries]
+        )
+        seen: set[str] = set()
+        result: list[dict] = []
+        for batch in per_sub_results:
+            for doc in batch:
+                if doc["chunk_id"] not in seen:
+                    seen.add(doc["chunk_id"])
+                    result.append(doc)
+        return result[:20]
+    except Exception:
+        logger.error("[FIQH_RETRIEVER] aretrieve_fiqh_documents error", exc_info=True)
         return []

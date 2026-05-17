@@ -5,6 +5,7 @@ This agent plans retrieval iteratively so it can choose between
 Shia hadith, Sunni hadith, and Quran/Tafsir evidence per query.
 """
 
+import asyncio
 import json
 from typing import Any, Dict, List, Literal
 
@@ -14,6 +15,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from core.resilience import anthropic_retry
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
 from agents.prompts.agent_prompts import (
     AGENT_SYSTEM_PROMPT,
@@ -36,6 +38,14 @@ from core.context import correlation_id as correlation_id_ctx
 from core.chat_models import make_cached_system_message
 
 logger = logging.getLogger(__name__)
+
+
+@anthropic_retry
+async def _retry_ainvoke(llm, messages):
+    """Module-level helper so @anthropic_retry can absorb transient errors
+    around LangGraph node LLM calls without each node redefining its own
+    retry-decorated wrapper. Each invocation is a fresh retry context."""
+    return await llm.ainvoke(messages)
 
 
 class ChatAgent:
@@ -114,13 +124,12 @@ class ChatAgent:
         workflow.add_edge("generate_fiqh_response", END)
         return workflow
 
-    def _fiqh_classification_node(self, state: ChatState) -> dict:
+    async def _fiqh_classification_node(self, state: ChatState) -> dict:
         logger.debug("Fiqh classification started", extra={"correlation_id": correlation_id_ctx.get()})
         try:
-            from modules.fiqh.classifier import classify_fiqh_query
+            from modules.fiqh.classifier import aclassify_fiqh_query
 
-            # Note: new classifier takes only query (not session_id) — Pitfall 3
-            category = classify_fiqh_query(state["user_query"])
+            category = await aclassify_fiqh_query(state["user_query"])
             is_fiqh = category.startswith("VALID_")
             logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": is_fiqh})
             return {
@@ -150,7 +159,7 @@ class ChatAgent:
         logger.debug("Routing to agent: not a fiqh query", extra={"correlation_id": correlation_id_ctx.get()})
         return "continue"
 
-    def _agent_node(self, state: ChatState) -> ChatState:
+    async def _agent_node(self, state: ChatState) -> ChatState:
         logger.debug("Agent node iteration", extra={"correlation_id": correlation_id_ctx.get(), "iteration": state["iterations"]})
 
         state["iterations"] += 1
@@ -181,7 +190,7 @@ class ChatAgent:
             messages.append(HumanMessage(content=self._build_iteration_summary(state)))
 
         try:
-            response = self.llm.invoke(messages)
+            response = await _retry_ainvoke(self.llm, messages)
             # Cache metrics: use response_metadata["usage"] (raw Anthropic dict).
             # Do NOT use the LangChain usage wrapper — it double-counts cached tokens
             # in streaming paths (GitHub #32818).
@@ -211,7 +220,7 @@ class ChatAgent:
 
         return state
 
-    def _tool_node(self, state: ChatState) -> ChatState:
+    async def _tool_node(self, state: ChatState) -> ChatState:
         logger.debug("Tool node executing", extra={"correlation_id": correlation_id_ctx.get()})
         last_message = state["messages"][-1] if state["messages"] else None
 
@@ -221,7 +230,10 @@ class ChatAgent:
 
         self._apply_tool_call_defaults(state, last_message.tool_calls)
         tool_node = ToolNode(self.tools)
-        result = tool_node.invoke(state)
+        # Every bound tool is now `@tool async def` (DEE-41), so ToolNode runs
+        # them via .ainvoke and they cooperatively yield while waiting on
+        # retrieval / classification / enhancement / translation.
+        result = await tool_node.ainvoke(state)
         result_messages = result.get("messages", [])
 
         for message in result_messages:
@@ -266,7 +278,7 @@ class ChatAgent:
             state["messages"].extend(result_messages)
         return state
 
-    def _generate_response_node(self, state: ChatState) -> ChatState:
+    async def _generate_response_node(self, state: ChatState) -> ChatState:
         logger.debug("Generating final response", extra={"correlation_id": correlation_id_ctx.get()})
 
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
@@ -287,7 +299,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             from core.chat_models import get_generator_model
 
             llm = get_generator_model()
-            response = llm.invoke(generation_messages)
+            response = await _retry_ainvoke(llm, generation_messages)
             state["final_response"] = response.content
             state["response_generated"] = True
             logger.debug("Response generated", extra={"correlation_id": correlation_id_ctx.get(), "response_chars": len(response.content)})
@@ -298,7 +310,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
         return state
 
-    def _check_early_exit_node(self, state: ChatState) -> dict:
+    async def _check_early_exit_node(self, state: ChatState) -> dict:
         logger.debug("Check early exit node", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC
 
@@ -322,7 +334,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     "Do not provide any ruling."
                 )
                 from langchain_core.messages import HumanMessage
-                response = model.invoke([HumanMessage(content=prompt_text)])
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -333,17 +345,32 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
         return {"final_response": "Unable to process the query."}
 
-    def _call_fiqh_subgraph_node(self, state: ChatState) -> dict:
+    async def _call_fiqh_subgraph_node(self, state: ChatState) -> dict:
         """
         Wrapper node that invokes the FiqhAgent sub-graph.
         Projects ChatState -> FiqhState input, invokes sub-graph, maps output -> ChatState delta.
         Uses Pattern 1 (node wrapper) because ChatState and FiqhState share no keys.
+
+        DEE-44 made every fiqh sub-graph node `async def`, so the whole 10-15s
+        subgraph run now drives via `.ainvoke` and yields between LLM calls
+        instead of blocking the executor.
         """
         logger.debug("Invoking FAIR-RAG sub-graph", extra={"correlation_id": correlation_id_ctx.get()})
         from agents.fiqh.fiqh_graph import fiqh_subgraph
+        from core.context import _push_fiqh_status
+
+        # Real-time SSE: emit the latency-expectation intro the moment we
+        # enter the wrapper node, before the ~10-15s sub-graph invoke. Without
+        # this, the parent astream loop only sees fiqh_subgraph activity AFTER
+        # the sub-graph completes, leaving the user staring at "Fiqh query
+        # detected..." for the whole window.
+        _push_fiqh_status(
+            "fiqh_subgraph",
+            "Processing fiqh query (this may take 10-15 seconds)...",
+        )
 
         try:
-            result = fiqh_subgraph.invoke({
+            result = await fiqh_subgraph.ainvoke({
                 "query": state["user_query"],
                 "iteration": 0,
                 "accumulated_docs": [],
@@ -374,7 +401,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                 "errors": state.get("errors", []) + [f"Fiqh sub-graph error: {str(exc)}"],
             }
 
-    def _generate_fiqh_response_node(self, state: ChatState) -> dict:
+    async def _generate_fiqh_response_node(self, state: ChatState) -> dict:
         """
         Non-streaming generation node for the fiqh path.
         Uses fiqh-specific system prompt and formats filtered docs as numbered evidence.
@@ -405,7 +432,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
         try:
             model = get_generator_model()
-            response = model.invoke(_build_messages(
+            response = await _retry_ainvoke(model, _build_messages(
                 query=state["user_query"],
                 evidence=_format_evidence(docs),
             ))
@@ -627,6 +654,9 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     @staticmethod
     def _load_runtime_messages(session_id: str):
+        """Sync history load used by `astream()` (kept sync because callers
+        like `core.pipeline_langgraph` already invoke this from a non-async
+        context inside the streaming wrapper)."""
         try:
             from core.memory import make_history
 
@@ -636,6 +666,44 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return []
 
+    @staticmethod
+    async def _aload_runtime_messages(session_id: str):
+        """Async-native runtime history load (DEE-43). Uses
+        `core.memory.amake_history` so Redis I/O doesn't block the event loop."""
+        try:
+            from core.memory import amake_history
+
+            history = amake_history(session_id)
+            return await history.aget_messages()
+        except Exception as exc:
+            logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            return []
+
+    async def ainvoke(
+        self,
+        user_query: str,
+        session_id: str,
+        target_language: str = "english",
+        config: dict = None,
+    ):
+        """Native async entry point. Every node is `async def` so this is the
+        only correct way to drive the graph from inside an event loop."""
+        from agents.state.chat_state import create_initial_state
+
+        initial_messages = await self._aload_runtime_messages(session_id)
+        initial_state = create_initial_state(
+            user_query=user_query,
+            session_id=session_id,
+            target_language=target_language,
+            config=config or self.config.to_dict(),
+            initial_messages=initial_messages,
+        )
+
+        return await self.compiled_graph.ainvoke(
+            initial_state,
+            config={"configurable": {"thread_id": session_id}},
+        )
+
     def invoke(
         self,
         user_query: str,
@@ -643,21 +711,17 @@ Generate a comprehensive, accurate response that directly addresses the user's q
         target_language: str = "english",
         config: dict = None,
     ):
-        from agents.state.chat_state import create_initial_state
-
-        initial_state = create_initial_state(
-            user_query=user_query,
-            session_id=session_id,
-            target_language=target_language,
-            config=config or self.config.to_dict(),
-            initial_messages=self._load_runtime_messages(session_id),
+        """Sync wrapper for callers outside an event loop. Inside FastAPI
+        routes use `await ainvoke(...)` directly — `asyncio.run()` cannot be
+        called from a running loop."""
+        return asyncio.run(
+            self.ainvoke(
+                user_query=user_query,
+                session_id=session_id,
+                target_language=target_language,
+                config=config,
+            )
         )
-
-        final_state = self.compiled_graph.invoke(
-            initial_state,
-            config={"configurable": {"thread_id": session_id}},
-        )
-        return final_state
 
     async def astream(
         self,
@@ -669,12 +733,13 @@ Generate a comprehensive, accurate response that directly addresses the user's q
     ):
         from agents.state.chat_state import create_initial_state
 
+        initial_messages = await self._aload_runtime_messages(session_id)
         initial_state = create_initial_state(
             user_query=user_query,
             session_id=session_id,
             target_language=target_language,
             config=config or self.config.to_dict(),
-            initial_messages=self._load_runtime_messages(session_id),
+            initial_messages=initial_messages,
             streaming_mode=streaming_mode,
         )
 

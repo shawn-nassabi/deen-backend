@@ -1,10 +1,10 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.async_session import get_db_async
 from db.schemas.chat_history import SavedChatDetailResponse, SavedChatListResponse
-from db.session import get_db
 from models.JWTBearer import JWTAuthorizationCredentials
 from models.schemas import ChatRequest
 from core import pipeline
@@ -68,7 +68,7 @@ async def chat_pipeline_ep(
 async def chat_pipeline_stream_ep(
     request: ChatRequest,
     credentials: JWTAuthorizationCredentials = Depends(auth),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
 ):
     """
     Streaming chat endpoint with Redis-backed memory.
@@ -93,12 +93,12 @@ async def chat_pipeline_stream_ep(
         runtime_session_id = session_id
 
         if user_id:
-            runtime_session_id = chat_persistence_service.hydrate_runtime_history_if_empty(
+            runtime_session_id = await chat_persistence_service.hydrate_runtime_history_if_empty(
                 db,
                 user_id=user_id,
                 session_id=session_id,
             )
-            chat_persistence_service.persist_user_message(
+            await chat_persistence_service.persist_user_message(
                 db,
                 user_id=user_id,
                 session_id=session_id,
@@ -129,7 +129,7 @@ async def chat_pipeline_stream_ep(
 async def chat_pipeline_agentic_ep(
     request: ChatRequest,
     credentials: JWTAuthorizationCredentials = Depends(auth),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
 ):
     """
     Agentic streaming chat endpoint using LangGraph.
@@ -183,12 +183,12 @@ async def chat_pipeline_agentic_ep(
         )
         runtime_session_id = session_id
         if user_id:
-            runtime_session_id = chat_persistence_service.hydrate_runtime_history_if_empty(
+            runtime_session_id = await chat_persistence_service.hydrate_runtime_history_if_empty(
                 db,
                 user_id=user_id,
                 session_id=session_id,
             )
-            chat_persistence_service.persist_user_message(
+            await chat_persistence_service.persist_user_message(
                 db,
                 user_id=user_id,
                 session_id=session_id,
@@ -303,8 +303,8 @@ async def chat_pipeline_agentic_non_stream_ep(
                     },
                 )
 
-        # Get response from agentic pipeline
-        result = pipeline_langgraph.chat_pipeline_agentic(
+        # Get response from agentic pipeline (async since DEE-41)
+        result = await pipeline_langgraph.chat_pipeline_agentic(
             user_query=user_query,
             session_id=session_id,
             target_language=target_language,
@@ -359,12 +359,12 @@ async def clear_session(
 @chat_router.get("/saved", response_model=SavedChatListResponse)
 async def list_saved_chats(
     credentials: JWTAuthorizationCredentials = Depends(auth),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     user_id = _require_user_id(credentials)
-    items, total = chat_persistence_service.list_sessions(
+    items, total = await chat_persistence_service.list_sessions(
         db,
         user_id=user_id,
         limit=limit,
@@ -382,12 +382,12 @@ async def list_saved_chats(
 async def get_saved_chat(
     session_id: str,
     credentials: JWTAuthorizationCredentials = Depends(auth),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
     user_id = _require_user_id(credentials)
-    result = chat_persistence_service.get_session_with_messages(
+    result = await chat_persistence_service.get_session_with_messages(
         db,
         user_id=user_id,
         session_id=session_id,

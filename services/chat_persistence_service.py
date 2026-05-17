@@ -3,15 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import re
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import iterate_in_threadpool
 
-from core.memory import make_history, trim_history
+from core.memory import amake_history, atrim_history, make_history, trim_history
 from db.models.chat_messages import ChatMessage
 from db.models.chat_sessions import ChatSession
 
@@ -103,22 +103,23 @@ def _touch_session(session_row: ChatSession) -> None:
     session_row.last_message_at = now
 
 
-def _get_session(db: Session, user_id: str, session_id: str) -> Optional[ChatSession]:
-    return (
-        db.query(ChatSession)
-        .filter(ChatSession.user_id == user_id, ChatSession.session_id == session_id)
-        .first()
+async def _get_session(db: AsyncSession, user_id: str, session_id: str) -> Optional[ChatSession]:
+    stmt = (
+        select(ChatSession)
+        .where(ChatSession.user_id == user_id, ChatSession.session_id == session_id)
     )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_or_create_session(
-    db: Session,
+async def get_or_create_session(
+    db: AsyncSession,
     *,
     user_id: str,
     session_id: str,
     first_query: str,
 ) -> ChatSession:
-    session_row = _get_session(db, user_id, session_id)
+    session_row = await _get_session(db, user_id, session_id)
     if session_row:
         return session_row
 
@@ -128,12 +129,12 @@ def get_or_create_session(
         title=derive_chat_title(first_query),
     )
     db.add(session_row)
-    db.flush()
+    await db.flush()
     return session_row
 
 
-def append_message(
-    db: Session,
+async def append_message(
+    db: AsyncSession,
     *,
     session_row: ChatSession,
     role: str,
@@ -149,32 +150,32 @@ def append_message(
     return message
 
 
-def persist_user_message(
-    db: Session,
+async def persist_user_message(
+    db: AsyncSession,
     *,
     user_id: str,
     session_id: str,
     user_query: str,
 ) -> ChatSession:
-    session_row = get_or_create_session(
+    session_row = await get_or_create_session(
         db,
         user_id=user_id,
         session_id=session_id,
         first_query=user_query,
     )
-    append_message(
+    await append_message(
         db,
         session_row=session_row,
         role="user",
         content=user_query,
     )
-    db.commit()
-    db.refresh(session_row)
+    await db.commit()
+    await db.refresh(session_row)
     return session_row
 
 
-def persist_assistant_message(
-    db: Session,
+async def persist_assistant_message(
+    db: AsyncSession,
     *,
     user_id: str,
     session_id: str,
@@ -184,43 +185,45 @@ def persist_assistant_message(
     if not cleaned_text:
         return None
 
-    session_row = _get_session(db, user_id, session_id)
+    session_row = await _get_session(db, user_id, session_id)
     if not session_row:
         return None
 
-    message = append_message(
+    message = await append_message(
         db,
         session_row=session_row,
         role="assistant",
         content=cleaned_text,
     )
-    db.commit()
+    await db.commit()
     return message
 
 
-def hydrate_runtime_history_if_empty(
-    db: Session,
+async def hydrate_runtime_history_if_empty(
+    db: AsyncSession,
     *,
     user_id: str,
     session_id: str,
 ) -> str:
+    """Async-native hydration: Redis check + Postgres backfill both run on the
+    event loop without `asyncio.to_thread` (DEE-45)."""
     runtime_session_id = build_runtime_session_id(user_id, session_id)
-    history = make_history(runtime_session_id)
+    history = amake_history(runtime_session_id)
 
-    # Preserve current runtime history if present.
-    if history.messages:
+    if await history.aget_messages():
         return runtime_session_id
 
-    session_row = _get_session(db, user_id, session_id)
+    session_row = await _get_session(db, user_id, session_id)
     if not session_row:
         return runtime_session_id
 
-    db_messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.chat_session_id == session_row.id)
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.chat_session_id == session_row.id)
         .order_by(ChatMessage.id.asc())
-        .all()
     )
+    result = await db.execute(stmt)
+    db_messages = list(result.scalars().all())
     if not db_messages:
         return runtime_session_id
 
@@ -232,10 +235,14 @@ def hydrate_runtime_history_if_empty(
             langchain_messages.append(AIMessage(content=message.content))
 
     if langchain_messages:
-        history.add_messages(langchain_messages)
-        trim_history(history)
+        await history.aadd_messages(langchain_messages)
+        await atrim_history(history)
 
     return runtime_session_id
+
+
+# Backwards-compatible alias retained for any caller still using the legacy name.
+ahydrate_runtime_history_if_empty = hydrate_runtime_history_if_empty
 
 
 def append_turn_to_runtime_history(
@@ -244,6 +251,8 @@ def append_turn_to_runtime_history(
     user_query: str,
     assistant_text: str,
 ) -> None:
+    """Sync variant kept for legacy callers and existing test patches. Prefer
+    `aappend_turn_to_runtime_history` from inside an event loop (DEE-43)."""
     history = make_history(runtime_session_id)
     history.add_messages(
         [
@@ -254,30 +263,57 @@ def append_turn_to_runtime_history(
     trim_history(history)
 
 
-def list_sessions(
-    db: Session,
+async def aappend_turn_to_runtime_history(
+    *,
+    runtime_session_id: str,
+    user_query: str,
+    assistant_text: str,
+) -> None:
+    """Async-native variant. Uses redis.asyncio so Redis I/O doesn't block
+    the event loop on every concurrent agentic stream's persistence step."""
+    history = amake_history(runtime_session_id)
+    await history.aadd_messages(
+        [
+            HumanMessage(content=user_query),
+            AIMessage(content=assistant_text),
+        ]
+    )
+    await atrim_history(history)
+
+
+async def list_sessions(
+    db: AsyncSession,
     *,
     user_id: str,
     limit: int,
     offset: int,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    total = db.query(func.count(ChatSession.id)).filter(ChatSession.user_id == user_id).scalar() or 0
+    total_stmt = (
+        select(func.count(ChatSession.id))
+        .where(ChatSession.user_id == user_id)
+    )
+    total_result = await db.execute(total_stmt)
+    total = total_result.scalar() or 0
 
-    message_count_expr = (
-        db.query(ChatMessage.chat_session_id, func.count(ChatMessage.id).label("message_count"))
+    message_count_subq = (
+        select(
+            ChatMessage.chat_session_id.label("chat_session_id"),
+            func.count(ChatMessage.id).label("message_count"),
+        )
         .group_by(ChatMessage.chat_session_id)
         .subquery()
     )
 
-    rows = (
-        db.query(ChatSession, message_count_expr.c.message_count)
-        .outerjoin(message_count_expr, ChatSession.id == message_count_expr.c.chat_session_id)
-        .filter(ChatSession.user_id == user_id)
+    rows_stmt = (
+        select(ChatSession, message_count_subq.c.message_count)
+        .outerjoin(message_count_subq, ChatSession.id == message_count_subq.c.chat_session_id)
+        .where(ChatSession.user_id == user_id)
         .order_by(ChatSession.last_message_at.desc(), ChatSession.id.desc())
         .offset(offset)
         .limit(limit)
-        .all()
     )
+    rows_result = await db.execute(rows_stmt)
+    rows = rows_result.all()
 
     items: List[Dict[str, Any]] = []
     for session_row, message_count in rows:
@@ -295,33 +331,34 @@ def list_sessions(
     return items, int(total)
 
 
-def get_session_with_messages(
-    db: Session,
+async def get_session_with_messages(
+    db: AsyncSession,
     *,
     user_id: str,
     session_id: str,
     limit: int,
     offset: int,
 ) -> Optional[Dict[str, Any]]:
-    session_row = _get_session(db, user_id, session_id)
+    session_row = await _get_session(db, user_id, session_id)
     if not session_row:
         return None
 
-    total_messages = (
-        db.query(func.count(ChatMessage.id))
-        .filter(ChatMessage.chat_session_id == session_row.id)
-        .scalar()
-        or 0
+    total_stmt = (
+        select(func.count(ChatMessage.id))
+        .where(ChatMessage.chat_session_id == session_row.id)
     )
+    total_result = await db.execute(total_stmt)
+    total_messages = total_result.scalar() or 0
 
-    messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.chat_session_id == session_row.id)
+    messages_stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.chat_session_id == session_row.id)
         .order_by(ChatMessage.id.asc())
         .offset(offset)
         .limit(limit)
-        .all()
     )
+    messages_result = await db.execute(messages_stmt)
+    messages = list(messages_result.scalars().all())
 
     return {
         "session_id": session_row.session_id,
@@ -345,13 +382,20 @@ def get_session_with_messages(
 def wrap_streaming_response_for_persistence(
     *,
     response: StreamingResponse,
-    db: Session,
+    db: AsyncSession,
     user_id: str,
     session_id: str,
-    on_assistant_message_saved: Optional[Callable[[str], None]] = None,
+    on_assistant_message_saved: Optional[Callable[[str], Awaitable[None] | None]] = None,
 ) -> StreamingResponse:
     original_iterator = response.body_iterator
     headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+
+    async def _save_callback(text: str) -> None:
+        if not on_assistant_message_saved:
+            return
+        result = on_assistant_message_saved(text)
+        if hasattr(result, "__await__"):
+            await result
 
     async def wrapped_iterator() -> AsyncIterator[Any]:
         collected_chunks: List[str] = []
@@ -362,26 +406,24 @@ def wrap_streaming_response_for_persistence(
         except Exception:
             partial_answer = extract_answer_text("".join(collected_chunks))
             if partial_answer:
-                persist_assistant_message(
+                await persist_assistant_message(
                     db,
                     user_id=user_id,
                     session_id=session_id,
                     assistant_text=partial_answer,
                 )
-                if on_assistant_message_saved:
-                    on_assistant_message_saved(partial_answer)
+                await _save_callback(partial_answer)
             raise
         else:
             full_answer = extract_answer_text("".join(collected_chunks))
             if full_answer:
-                persist_assistant_message(
+                await persist_assistant_message(
                     db,
                     user_id=user_id,
                     session_id=session_id,
                     assistant_text=full_answer,
                 )
-                if on_assistant_message_saved:
-                    on_assistant_message_saved(full_answer)
+                await _save_callback(full_answer)
 
     return StreamingResponse(
         wrapped_iterator(),

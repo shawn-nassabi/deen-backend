@@ -5,12 +5,16 @@ Classifies user queries into one of 6 categories to route them to the
 correct retrieval strategy before any retrieval runs.
 """
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
+
+logger = logging.getLogger(__name__)
 
 
 class FiqhCategory(BaseModel):
@@ -67,11 +71,11 @@ def _build_messages(query: str) -> list:
 
 def classify_fiqh_query(query: str) -> str:
     """
-    Classifies a fiqh query into one of 6 categories.
-    Never raises — returns OUT_OF_SCOPE_FIQH on any error.
+    Sync variant kept for legacy callers. Prefer `aclassify_fiqh_query` from
+    inside an event loop (DEE-44).
 
-    Uses with_structured_output to reliably extract the category
-    regardless of Claude preamble text in the response.
+    Classifies a fiqh query into one of 6 categories. Never raises — returns
+    OUT_OF_SCOPE_FIQH on any error.
 
     Returns one of: VALID_OBVIOUS, VALID_SMALL, VALID_LARGE, VALID_REASONER,
                     OUT_OF_SCOPE_FIQH, UNETHICAL
@@ -82,4 +86,24 @@ def classify_fiqh_query(query: str) -> str:
         result = structured_model.invoke(_build_messages(query))
         return result.category
     except Exception:
+        return "OUT_OF_SCOPE_FIQH"
+
+
+@anthropic_retry
+async def _aclassify_fiqh_query_call(query: str) -> FiqhCategory:
+    model = chat_models.get_classifier_model()
+    structured_model = model.with_structured_output(FiqhCategory)
+    return await structured_model.ainvoke(_build_messages(query))
+
+
+async def aclassify_fiqh_query(query: str) -> str:
+    """Native async variant of `classify_fiqh_query`."""
+    try:
+        result = await _aclassify_fiqh_query_call(query)
+        return result.category
+    except Exception:
+        logger.error(
+            "[FIQH_CLASSIFIER] aclassify_fiqh_query failed after retries, falling back to OUT_OF_SCOPE_FIQH",
+            exc_info=True,
+        )
         return "OUT_OF_SCOPE_FIQH"

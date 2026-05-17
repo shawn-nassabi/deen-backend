@@ -14,6 +14,7 @@ import logging
 from langchain_core.messages import HumanMessage
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
 from modules.fiqh.sea import SEAResult
 
 logger = logging.getLogger(__name__)
@@ -57,50 +58,87 @@ Generate 1-4 new retrieval sub-queries targeting the gaps above."""),
     ]
 
 
+def _build_refine_messages(
+    original_query: str,
+    sea_result: SEAResult,
+    prior_queries: list[str],
+):
+    confirmed_facts_text = "\n".join(f"- {f}" for f in sea_result.confirmed_facts) or "(none yet)"
+    gaps_text = "\n".join(f"- {g}" for g in sea_result.gaps) or "(no specific gaps identified)"
+    prior_queries_text = "\n".join(f"- {q}" for q in prior_queries) or "(none)"
+    return _build_messages(
+        original_query=original_query,
+        confirmed_facts=confirmed_facts_text,
+        gaps=gaps_text,
+        prior_queries=prior_queries_text,
+    )
+
+
+def _parse_refinements(content: str, original_query: str) -> list[str]:
+    if content.startswith("```"):
+        parts = content.split("```")
+        content = parts[1] if len(parts) > 1 else content
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+    try:
+        new_queries = json.loads(content)
+    except Exception:
+        return [original_query]
+    if not isinstance(new_queries, list) or not new_queries:
+        return [original_query]
+    return [str(q).strip() for q in new_queries[:4] if str(q).strip()] or [original_query]
+
+
 def refine_query(
     original_query: str,
     sea_result: SEAResult,
     prior_queries: list[str] | None = None,
 ) -> list[str]:
     """
-    Generates 1-4 targeted refinement sub-queries based on SEA gaps and confirmed facts.
-    Falls back to [original_query] on any error.
-    Never raises.
+    Sync variant kept for legacy callers. Prefer `arefine_query` from inside
+    an event loop (DEE-44).
 
-    Args:
-        original_query: The original fiqh query string
-        sea_result: SEAResult from assess_evidence — provides confirmed_facts and gaps
-        prior_queries: List of queries already tried (to avoid repetition). Defaults to [].
-
-    Returns:
-        list[str]: 1-4 new sub-query strings. Never empty, never raises.
+    Generates 1-4 targeted refinement sub-queries based on SEA gaps and
+    confirmed facts. Falls back to [original_query] on any error.
     """
     if prior_queries is None:
         prior_queries = []
     try:
         model = chat_models.get_generator_model()
-        confirmed_facts_text = "\n".join(f"- {f}" for f in sea_result.confirmed_facts) or "(none yet)"
-        gaps_text = "\n".join(f"- {g}" for g in sea_result.gaps) or "(no specific gaps identified)"
-        prior_queries_text = "\n".join(f"- {q}" for q in prior_queries) or "(none)"
-
-        response = model.invoke(_build_messages(
-            original_query=original_query,
-            confirmed_facts=confirmed_facts_text,
-            gaps=gaps_text,
-            prior_queries=prior_queries_text,
-        ))
-        content = response.content.strip()
-        # Strip markdown code fences if LLM wraps output
-        if content.startswith("```"):
-            parts = content.split("```")
-            content = parts[1] if len(parts) > 1 else content
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-        new_queries = json.loads(content)
-        if not isinstance(new_queries, list) or not new_queries:
-            return [original_query]
-        return [str(q).strip() for q in new_queries[:4] if str(q).strip()]
+        response = model.invoke(_build_refine_messages(original_query, sea_result, prior_queries))
+        return _parse_refinements(response.content.strip(), original_query)
     except Exception as e:
         logger.warning("[FIQH_REFINER] refine_query error, falling back to original: %s", e)
+        return [original_query]
+
+
+@anthropic_retry
+async def _arefine_query_call(
+    original_query: str,
+    sea_result: SEAResult,
+    prior_queries: list[str],
+):
+    model = chat_models.get_generator_model()
+    return await model.ainvoke(
+        _build_refine_messages(original_query, sea_result, prior_queries)
+    )
+
+
+async def arefine_query(
+    original_query: str,
+    sea_result: SEAResult,
+    prior_queries: list[str] | None = None,
+) -> list[str]:
+    """Native async variant of `refine_query`."""
+    if prior_queries is None:
+        prior_queries = []
+    try:
+        response = await _arefine_query_call(original_query, sea_result, prior_queries)
+        return _parse_refinements(response.content.strip(), original_query)
+    except Exception:
+        logger.error(
+            "[FIQH_REFINER] arefine_query failed after retries, falling back to original",
+            exc_info=True,
+        )
         return [original_query]

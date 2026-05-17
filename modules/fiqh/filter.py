@@ -14,6 +14,7 @@ import logging
 from langchain_core.messages import HumanMessage
 from core import chat_models
 from core.chat_models import make_cached_system_message
+from core.resilience import anthropic_retry
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +51,33 @@ def _format_evidence_with_ids(docs: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _resolve_filter_response(content: str, docs: list[dict]) -> list[dict]:
+    if content.startswith("```"):
+        parts = content.split("```")
+        content = parts[1] if len(parts) > 1 else content
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+    try:
+        chunk_ids_to_keep: list[str] = json.loads(content)
+    except Exception:
+        return docs  # fail open
+    if not isinstance(chunk_ids_to_keep, list) or not chunk_ids_to_keep:
+        logger.warning("[FIQH_FILTER] LLM returned empty keep list — keeping all %d docs", len(docs))
+        return docs
+    keep_set = {str(cid) for cid in chunk_ids_to_keep}
+    filtered = [doc for doc in docs if doc.get("chunk_id") in keep_set]
+    return filtered if filtered else docs
+
+
 def filter_evidence(query: str, docs: list[dict]) -> list[dict]:
     """
+    Sync variant kept for legacy callers. Prefer `afilter_evidence` from
+    inside an event loop (DEE-44).
+
     Filters retrieved evidence using a single batch LLM call.
     Inclusive bias — returns all docs on any error or if LLM returns empty list.
     Never raises.
-
-    Args:
-        query: The original fiqh query string
-        docs: List of doc dicts with chunk_id, metadata, page_content keys
-
-    Returns:
-        list[dict]: Subset of input docs to keep. Returns all docs on error.
     """
     if not docs:
         return []
@@ -71,25 +87,31 @@ def filter_evidence(query: str, docs: list[dict]) -> list[dict]:
             query=query,
             evidence=_format_evidence_with_ids(docs),
         ))
-        content = response.content.strip()
-        # Strip markdown code fences if LLM wraps output
-        if content.startswith("```"):
-            parts = content.split("```")
-            content = parts[1] if len(parts) > 1 else content
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-        chunk_ids_to_keep: list[str] = json.loads(content)
-        if not isinstance(chunk_ids_to_keep, list) or not chunk_ids_to_keep:
-            # Empty list = over-aggressive filtering — fail open, keep all
-            logger.warning("[FIQH_FILTER] LLM returned empty keep list — keeping all %d docs", len(docs))
-            return docs
-        keep_set = set(str(cid) for cid in chunk_ids_to_keep)
-        filtered = [doc for doc in docs if doc.get("chunk_id") in keep_set]
-        if not filtered:
-            # No known chunk_ids matched — fail open
-            return docs
-        return filtered
+        return _resolve_filter_response(response.content.strip(), docs)
     except Exception as e:
         logger.warning("[FIQH_FILTER] filter_evidence error, returning all docs: %s", e)
+        return docs
+
+
+@anthropic_retry
+async def _afilter_evidence_call(query: str, docs: list[dict]):
+    model = chat_models.get_generator_model()
+    return await model.ainvoke(_build_messages(
+        query=query,
+        evidence=_format_evidence_with_ids(docs),
+    ))
+
+
+async def afilter_evidence(query: str, docs: list[dict]) -> list[dict]:
+    """Native async variant of `filter_evidence`."""
+    if not docs:
+        return []
+    try:
+        response = await _afilter_evidence_call(query, docs)
+        return _resolve_filter_response(response.content.strip(), docs)
+    except Exception:
+        logger.error(
+            "[FIQH_FILTER] afilter_evidence failed after retries, returning all docs",
+            exc_info=True,
+        )
         return docs

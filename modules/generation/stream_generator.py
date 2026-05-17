@@ -40,11 +40,54 @@ def generate_response_stream(query: str, retrieved_docs: list, session_id: str, 
     hist = make_history(session_id)
     trim_history(hist)
 
+def _build_elaboration_messages(
+    selected_text: str,
+    context_text: str,
+    hikmah_tree_name: str,
+    lesson_name: str,
+    lesson_summary: str,
+    retrieved_docs: list,
+) -> list:
+    references = utils.compact_format_references(retrieved_docs=retrieved_docs)
+    return prompt_templates.hikmah_elaboration_messages(
+        selected_text=selected_text,
+        context_text=context_text,
+        hikmah_tree_name=hikmah_tree_name,
+        lesson_name=lesson_name,
+        lesson_summary=lesson_summary,
+        references=references,
+    )
+
+
+def _schedule_hikmah_memory_update(user_id: str, selected_text: str, hikmah_tree_name: str, lesson_name: str):
+    """Fire-and-forget memory update. Runs in a daemon thread with its own
+    event loop so it never blocks the response stream and is independent of
+    whether the caller is sync or async."""
+    memory_logger.info(
+        "Scheduling hikmah memory update",
+        extra={
+            "user_id": user_id,
+            "selected_text_len": len(selected_text or ""),
+            "selected_text_preview": (selected_text or "")[:120],
+            "hikmah_tree_name": hikmah_tree_name,
+            "lesson_name": lesson_name,
+            "context_text_passed": False,
+            "lesson_summary_passed": False,
+        },
+    )
+    thread = threading.Thread(
+        target=_run_memory_update_sync,
+        args=(user_id, selected_text, hikmah_tree_name, lesson_name),
+        daemon=True,
+    )
+    thread.start()
+    print(f"🧠 Memory agent thread started for user {user_id}")
+
+
 def generate_elaboration_response_stream(selected_text: str, context_text: str, hikmah_tree_name: str, lesson_name: str, lesson_summary: str, retrieved_docs: list, user_id: Optional[str] = None):
     """
-    Generates a streaming response using the chat model.
-    Yields chunks of text as they are generated.
-    If user_id is provided, triggers memory agent after streaming completes.
+    Sync streaming generator kept for legacy callers. Prefer
+    `agenerate_elaboration_response_stream` from inside an event loop (DEE-44).
     """
     print("INSIDE generate_elaboration_response_stream")
     logger.info(
@@ -59,58 +102,53 @@ def generate_elaboration_response_stream(selected_text: str, context_text: str, 
             "lesson_name": lesson_name,
         },
     )
-    # Format retrieved references
-    references = utils.compact_format_references(retrieved_docs=retrieved_docs)
-
     chat_model = chat_models.get_generator_model()
-
-    messages = prompt_templates.hikmah_elaboration_messages(
-        selected_text=selected_text,
-        context_text=context_text,
-        hikmah_tree_name=hikmah_tree_name,
-        lesson_name=lesson_name,
-        lesson_summary=lesson_summary,
-        references=references,
+    messages = _build_elaboration_messages(
+        selected_text, context_text, hikmah_tree_name, lesson_name, lesson_summary, retrieved_docs
     )
 
-    # Capture AI response for memory agent (if user_id provided)
-    ai_response_chunks = []
-
-    # Stream chunks to caller
     for chunk in chat_model.stream(messages):
-        # `chunk` is typically an AIMessageChunk or string
-        content = getattr(chunk, "content", str(chunk) if chunk is not None else "")
-        
-        # Capture for memory agent
-        if user_id:
-            ai_response_chunks.append(content)
-        
-        yield content
-    
-    # After streaming completes, trigger memory agent if user_id provided
+        yield getattr(chunk, "content", str(chunk) if chunk is not None else "")
+
     if user_id:
-        # Fire and forget: Run memory update in separate thread
-        # Note: We don't pass ai_response or full context_text to avoid overwhelming the agent
-        # The selected_text + lesson/tree name is the key signal
-        memory_logger.info(
-            "Scheduling hikmah memory update",
-            extra={
-                "user_id": user_id,
-                "selected_text_len": len(selected_text or ""),
-                "selected_text_preview": (selected_text or "")[:120],
-                "hikmah_tree_name": hikmah_tree_name,
-                "lesson_name": lesson_name,
-                "context_text_passed": False,
-                "lesson_summary_passed": False,
-            },
-        )
-        thread = threading.Thread(
-            target=_run_memory_update_sync,
-            args=(user_id, selected_text, hikmah_tree_name, lesson_name),
-            daemon=True  # Daemon thread won't prevent shutdown
-        )
-        thread.start()
-        print(f"🧠 Memory agent thread started for user {user_id}")
+        _schedule_hikmah_memory_update(user_id, selected_text, hikmah_tree_name, lesson_name)
+
+
+async def agenerate_elaboration_response_stream(
+    selected_text: str,
+    context_text: str,
+    hikmah_tree_name: str,
+    lesson_name: str,
+    lesson_summary: str,
+    retrieved_docs: list,
+    user_id: Optional[str] = None,
+):
+    """Native async generator. Uses `chain.astream` so the worker can serve
+    other concurrent SSE streams while this one waits on Anthropic tokens.
+    The fire-and-forget memory thread is unchanged — it doesn't share a loop
+    with the caller anyway."""
+    logger.info(
+        "Starting hikmah elaboration stream (async)",
+        extra={
+            "user_id": user_id,
+            "selected_text_len": len(selected_text or ""),
+            "selected_text_preview": (selected_text or "")[:120],
+            "context_text_len": len(context_text or ""),
+            "lesson_summary_len": len(lesson_summary or ""),
+            "hikmah_tree_name": hikmah_tree_name,
+            "lesson_name": lesson_name,
+        },
+    )
+    chat_model = chat_models.get_generator_model()
+    messages = _build_elaboration_messages(
+        selected_text, context_text, hikmah_tree_name, lesson_name, lesson_summary, retrieved_docs
+    )
+
+    async for chunk in chat_model.astream(messages):
+        yield getattr(chunk, "content", str(chunk) if chunk is not None else "")
+
+    if user_id:
+        _schedule_hikmah_memory_update(user_id, selected_text, hikmah_tree_name, lesson_name)
 
 
 def _run_memory_update_sync(user_id: str, selected_text: str,
