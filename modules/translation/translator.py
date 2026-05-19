@@ -35,10 +35,11 @@ def translate_to_english(text: str, source_language: str | None = None) -> str:
 @anthropic_retry
 async def _atranslate_to_english_call(text: str, source_language: str | None):
     chat_model = chat_models.get_translator_model()
-    prompt = prompt_templates.translation_prompt_template.invoke(
-        {"source_language": source_language or "unknown", "text": text}
+    messages = prompt_templates.translation_messages(
+        source_language=source_language or "unknown",
+        text=text,
     )
-    return await chat_model.ainvoke(prompt.to_messages())
+    return await chat_model.ainvoke(messages)
 
 
 async def atranslate_to_english(text: str, source_language: str | None = None) -> str:
