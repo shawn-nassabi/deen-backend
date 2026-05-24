@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -9,6 +10,24 @@ from core.config import SENTRY_DSN
 # D-05: Both SENTRY_ENABLED=true AND SENTRY_DSN must be set for Sentry to activate.
 # Absence of either leaves Sentry completely silent — safe for local dev.
 SENTRY_ENABLED: bool = os.getenv("SENTRY_ENABLED", "").lower() == "true"
+
+
+def _drop_cancelled_error(event: dict, hint: dict) -> dict | None:
+    """Drop Sentry events whose top-level exception is asyncio.CancelledError.
+
+    A benign SSE client disconnect on a streaming endpoint surfaces as
+    CancelledError in uvicorn's `BaseException` ASGI catch (h11_impl.py),
+    which then becomes a Sentry event via LoggingIntegration (event_level=ERROR).
+    Per-handler fixes in api/primers.py and core/pipeline_langgraph.py turn
+    these into INFO logs, but this filter is the safety net for any code
+    path that adds the same vulnerability later.
+
+    Returning None tells the Sentry SDK to discard the event entirely.
+    """
+    exc_info = hint.get("exc_info") if hint else None
+    if exc_info and exc_info[0] is asyncio.CancelledError:
+        return None
+    return event
 
 
 def _scrub_pii(event: dict, hint: dict) -> dict:
@@ -27,6 +46,14 @@ def _scrub_pii(event: dict, hint: dict) -> dict:
     return event
 
 
+def _before_send(event: dict, hint: dict) -> dict | None:
+    """Composed before_send: filter CancelledError first, then scrub PII."""
+    event = _drop_cancelled_error(event, hint)
+    if event is None:
+        return None
+    return _scrub_pii(event, hint)
+
+
 if SENTRY_ENABLED and SENTRY_DSN:
     sentry_sdk.init(
         dsn=SENTRY_DSN,
@@ -41,7 +68,7 @@ if SENTRY_ENABLED and SENTRY_DSN:
                 sentry_logs_level=logging.INFO,  # Sentry Logs threshold
             )
         ],
-        before_send=_scrub_pii,
+        before_send=_before_send,
         enable_logs=True,
     )
 

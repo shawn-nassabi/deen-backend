@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 import uuid
 import logging
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db.repositories.memory_profile_repository import MemoryProfileRepository
@@ -32,20 +33,33 @@ class MemoryService:
         profile = self.profile_repo.get_by_user_id(self.db, user_id)
         if profile:
             return profile
-        profile = self.profile_repo.create(
-            self.db,
-            user_id=user_id,
-            defaults={
-                "learning_notes": [],
-                "interest_notes": [],
-                "knowledge_notes": [],
-                "behavior_notes": [],
-                "preference_notes": [],
-            },
-        )
-        # No commit here; caller controls commit boundary
-        self.db.flush()
-        return profile
+        # Savepoint protects the outer transaction from a unique-violation
+        # raised by a concurrent get_or_create for the same user_id. On
+        # IntegrityError the savepoint rolls back, the outer session stays
+        # usable, and we re-fetch the row the race winner just inserted.
+        try:
+            with self.db.begin_nested():
+                profile = self.profile_repo.create(
+                    self.db,
+                    user_id=user_id,
+                    defaults={
+                        "learning_notes": [],
+                        "interest_notes": [],
+                        "knowledge_notes": [],
+                        "behavior_notes": [],
+                        "preference_notes": [],
+                    },
+                )
+                # No outer commit here; caller controls commit boundary.
+                self.db.flush()
+            return profile
+        except IntegrityError:
+            existing = self.profile_repo.get_by_user_id(self.db, user_id)
+            if existing is None:
+                # IntegrityError came from something other than the
+                # uq_user_memory_profiles_user_id race — re-raise.
+                raise
+            return existing
 
     def add_notes(self, profile: UserMemoryProfile, new_notes: List[Dict]) -> UserMemoryProfile:
         # Stamp notes
