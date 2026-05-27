@@ -9,6 +9,7 @@ import asyncio
 import json
 from typing import AsyncGenerator, Optional
 
+import anthropic
 from fastapi.responses import StreamingResponse
 
 from agents.config.agent_config import AgentConfig, DEFAULT_AGENT_CONFIG
@@ -19,6 +20,37 @@ from core.context import correlation_id as correlation_id_ctx, fiqh_status_queue
 from core.sentry import record_cache_metrics_breadcrumb
 
 logger = logging.getLogger(__name__)
+
+
+# Anthropic error types that indicate a transient overload / capacity issue.
+# When one of these propagates to the SSE error handler, the user should see a
+# "service is temporarily busy" message rather than a generic "error occurred".
+_TRANSIENT_ANTHROPIC_TYPES = (
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+)
+
+# Status codes considered transient (includes 529 OverloadedError which is an
+# APIStatusError subclass not exported at the top-level anthropic module).
+_TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504, 529}
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Return True if *exc* (or its __cause__ chain) is a transient Anthropic
+    API error that the user should be told is temporary."""
+    # Walk the cause chain — LangChain wraps Anthropic exceptions in its own
+    # OutputParserException / LangChainError, but the original is on __cause__.
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, _TRANSIENT_ANTHROPIC_TYPES):
+            return True
+        if isinstance(current, anthropic.APIStatusError):
+            if getattr(current, "status_code", None) in _TRANSIENT_STATUS_CODES:
+                return True
+        current = getattr(current, "__cause__", None)
+    return False
 
 
 # Human-readable status messages for each agent node.
@@ -508,10 +540,15 @@ async def chat_pipeline_streaming_agentic(
             raise
 
         except Exception as e:
-            logger.error("Pipeline error", exc_info=True, extra={
-                "correlation_id": correlation_id_ctx.get(),
-                "session_id": session_id,
-            })
+            is_transient = _is_transient_llm_error(e)
+            logger.error(
+                "Pipeline error%s", " (transient LLM overload)" if is_transient else "",
+                exc_info=True, extra={
+                    "correlation_id": correlation_id_ctx.get(),
+                    "session_id": session_id,
+                    "transient": is_transient,
+                },
+            )
             if assistant_text and not history_written:
                 try:
                     from services import chat_persistence_service
@@ -526,7 +563,13 @@ async def chat_pipeline_streaming_agentic(
                         "correlation_id": correlation_id_ctx.get(),
                         "session_id": session_id,
                     })
-            yield sse_event("error", {"message": "An error occurred. Please try again."})
+            if is_transient:
+                yield sse_event("error", {
+                    "message": "Our AI service is temporarily busy. Please try again in a moment.",
+                    "retry": True,
+                })
+            else:
+                yield sse_event("error", {"message": "An error occurred. Please try again."})
             _emit_cache_metrics_breadcrumb(final_state)
             yield sse_event("done", {})
         finally:

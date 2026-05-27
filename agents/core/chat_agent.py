@@ -74,6 +74,8 @@ class ChatAgent:
             api_key=ANTHROPIC_API_KEY,
             temperature=self.config.model.temperature,
             max_tokens=self.config.model.max_tokens,
+            max_retries=5,
+            timeout=60,
         )
         # Build a bind_tools list with the last tool replaced by the cached Anthropic dict.
         # self.tools keeps callable objects for ToolNode; this list is only for bind_tools.
