@@ -58,12 +58,30 @@ def get_enhancer_model():
 
 
 def get_classifier_model():
-    """Returns ChatAnthropic for fiqh classification and SEA structured output."""
+    """Returns ChatAnthropic for fiqh classification and decomposition (short outputs)."""
     from core.config import LARGE_LLM
     return ChatAnthropic(
         model=LARGE_LLM,
         api_key=ANTHROPIC_API_KEY,
         max_tokens=2048,
+        max_retries=_ANTHROPIC_MAX_RETRIES,
+        timeout=_ANTHROPIC_TIMEOUT_S,
+    )
+
+
+def get_sea_model():
+    """Returns ChatAnthropic for SEA (Structured Evidence Assessment).
+
+    Uses max_tokens=4096 because SEAResult structured output includes
+    per-finding citation quotes that scale with evidence volume.  With 20+
+    docs the output easily exceeds the 2048 budget of get_classifier_model(),
+    causing a max_tokens truncation that breaks the output parser.
+    """
+    from core.config import LARGE_LLM
+    return ChatAnthropic(
+        model=LARGE_LLM,
+        api_key=ANTHROPIC_API_KEY,
+        max_tokens=4096,
         max_retries=_ANTHROPIC_MAX_RETRIES,
         timeout=_ANTHROPIC_TIMEOUT_S,
     )
