@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-04 after v1.4 milestone archived)
 Milestone v1.4 complete — all 3 phases, 9 plans shipped.
 Next: `/gsd-new-milestone` to define v1.5 requirements and roadmap.
 Status: v1.4 milestone complete — OBS-02 human action required after next deploy
-Last activity: 2026-05-10 — Completed quick task 260510-qcx: Fix primer stream CancelledError handling (stops Sentry from capturing benign SSE client disconnects)
+Last activity: 2026-05-30 — Completed quick task 260530-ddo: Skip quiz pages in hikmah upsert, attach MCQs to last text page, fix meta.total_pages count
 
 Progress bar: `▓▓▓▓▓▓░░░░` 67% (2/3 phases complete)
 
@@ -91,6 +91,7 @@ None.
 | 260509-r51 | DEE-51 chatbot error resilience + observability (Anthropic/Pinecone retries + Sentry-visible logging) | 2026-05-09 | e110e03 | Complete | [260509-r51-dee-51-error-resilience-and-logging](./quick/260509-r51-dee-51-error-resilience-and-logging/) |
 | 260509-3cd | Real-time fiqh SSE status events — eliminate the 10-15s silent gap during fiqh sub-graph execution | 2026-05-10 | 94a06d4 | Complete | [260509-3cd-realtime-fiqh-sse-status-events](./quick/260509-3cd-realtime-fiqh-sse-status-events/) |
 | 260510-qcx | Fix primer stream CancelledError handling — stop Sentry from capturing benign SSE client disconnects | 2026-05-10 | 8f03c25 | Complete | [260510-qcx-fix-primer-stream-cancellederror-handlin](./quick/260510-qcx-fix-primer-stream-cancellederror-handlin/) |
+| 260530-ddo | Skip quiz pages in hikmah upsert, attach MCQs to last text page, fix meta.total_pages count | 2026-05-30 | 64e3635 | Complete | [260530-ddo-skip-quiz-pages-in-hikmah-upsert-attach-](./quick/260530-ddo-skip-quiz-pages-in-hikmah-upsert-attach-/) |
 
 ## Session Continuity
 
