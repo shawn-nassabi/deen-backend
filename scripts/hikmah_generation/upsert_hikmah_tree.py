@@ -5,6 +5,10 @@ Takes a `<slug>_db.json` file produced by `generate_hikmah_tree.py` and inserts
 its contents across five tables: hikmah_trees, lessons, lesson_content,
 lesson_page_quiz_questions, lesson_page_quiz_choices.
 
+Quiz entries (`content_type == "quiz"`) in the input do NOT create their own
+`lesson_content` row — their MCQs are attached to the last-inserted text page
+of the same lesson.
+
 Usage:
     python scripts/hikmah_generation/upsert_hikmah_tree.py <input.json>
     python scripts/hikmah_generation/upsert_hikmah_tree.py <input.json> --dry-run
@@ -369,6 +373,20 @@ def upsert_hikmah_tree(
                 f"(quiz questions/choices cascaded)."
             )
 
+    # Recompute meta.total_pages so it reflects only text-page rows we will insert
+    # (quiz entries no longer create their own page row). Leave meta untouched if
+    # the input did not declare total_pages. _insert_tree reads tree_data.get("meta")
+    # directly, so mutating the dict in place here is enough — no _insert_tree change.
+    tree_meta = payload["hikmah_tree"].get("meta")
+    if isinstance(tree_meta, dict) and "total_pages" in tree_meta:
+        total_text_pages = sum(
+            1
+            for lesson in payload["lessons"]
+            for entry in lesson["content"]
+            if entry["content_type"] == "text"
+        )
+        tree_meta["total_pages"] = total_text_pages
+
     # Insert fresh tree.
     tree = _insert_tree(db, payload["hikmah_tree"])
 
@@ -378,16 +396,29 @@ def upsert_hikmah_tree(
         lesson = _insert_lesson(db, lesson_data, tree.id)
         counts["lessons"] += 1
 
+        last_text_page: LessonContent | None = None
         for content_data in sorted(lesson_data["content"], key=lambda c: c["order_position"]):
-            page = _insert_content(db, content_data, lesson.id)
-            counts["pages"] += 1
+            content_type = content_data["content_type"]
 
-            if content_data["content_type"] == "quiz":
-                mcqs = content_data["content_json"]["mcqs"]
-                for m_idx, mcq in enumerate(mcqs, start=1):
-                    _, choices = _insert_mcq(db, page.id, mcq, order_position=m_idx)
-                    counts["questions"] += 1
-                    counts["choices"] += len(choices)
+            if content_type == "text":
+                page = _insert_content(db, content_data, lesson.id)
+                counts["pages"] += 1
+                last_text_page = page
+                continue
+
+            # content_type == "quiz"
+            if last_text_page is None:
+                raise ValidationError(
+                    f"Lesson {lesson_data['slug']!r} content begins with a quiz entry "
+                    f"(order_position={content_data['order_position']}) before any text page — "
+                    f"cannot attach MCQs."
+                )
+
+            mcqs = content_data["content_json"]["mcqs"]
+            for m_idx, mcq in enumerate(mcqs, start=1):
+                _, choices = _insert_mcq(db, last_text_page.id, mcq, order_position=m_idx)
+                counts["questions"] += 1
+                counts["choices"] += len(choices)
 
     return {
         "tree_id": tree.id,
