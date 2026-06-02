@@ -119,7 +119,7 @@ class TestAssessEvidence:
             gaps=[],
         )
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=_mock_sea_model(expected),
         ):
             result = assess_evidence("Is wudu required?", [_make_doc("chunk_1")])
@@ -133,7 +133,7 @@ class TestAssessEvidence:
         mock_structured.invoke.side_effect = Exception("API failure")
 
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=mock_model,
         ):
             result = assess_evidence("Is wudu required?", [_make_doc("chunk_1")])
@@ -152,7 +152,7 @@ class TestAssessEvidence:
         mock_structured.invoke.side_effect = RuntimeError("network error")
 
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=mock_model,
         ):
             result = assess_evidence(query, [_make_doc("chunk_1")])
@@ -167,7 +167,7 @@ class TestAssessEvidence:
         mock_structured.invoke.side_effect = Exception("no docs")
 
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=mock_model,
         ):
             result = assess_evidence("test query", [])
@@ -189,7 +189,7 @@ class TestAssessEvidence:
         mock_structured.invoke.return_value = expected
 
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=mock_model,
         ):
             assess_evidence("test query", [_make_doc("chunk_1")])
@@ -219,7 +219,7 @@ class TestAssessEvidence:
             gaps=[],
         )
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=_mock_sea_model(sufficient_result),
         ):
             result = assess_evidence("complex query", [_make_doc("chunk_1")])
@@ -248,7 +248,7 @@ class TestAssessEvidence:
             gaps=["no ruling for finding 2"],
         )
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=_mock_sea_model(insufficient_result),
         ):
             result = assess_evidence("multi-part query", [_make_doc("chunk_1")])
@@ -261,7 +261,7 @@ class TestAssessEvidence:
         mock_model.with_structured_output.side_effect = Exception("unexpected error")
 
         with patch(
-            "modules.fiqh.sea.chat_models.get_classifier_model",
+            "modules.fiqh.sea.chat_models.get_sea_model",
             return_value=mock_model,
         ):
             # Must not raise

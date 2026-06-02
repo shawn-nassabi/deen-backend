@@ -87,7 +87,7 @@ def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
     Never raises — returns INSUFFICIENT fallback on any error.
     """
     try:
-        model = chat_models.get_classifier_model()
+        model = chat_models.get_sea_model()
         structured_model = model.with_structured_output(SEAResult)
         return structured_model.invoke(
             _build_messages(
@@ -102,7 +102,7 @@ def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
 
 @anthropic_retry
 async def _aassess_evidence_call(query: str, docs: list[dict]) -> SEAResult:
-    model = chat_models.get_classifier_model()
+    model = chat_models.get_sea_model()
     structured_model = model.with_structured_output(SEAResult)
     return await structured_model.ainvoke(
         _build_messages(
