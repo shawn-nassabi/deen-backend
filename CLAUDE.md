@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## MCP servers
+
+Project-scoped MCP servers are declared in `.mcp.json` at the repo root (committed, so they
+carry over to both local CLI and Claude Code on the web).
+
+- **linear** — Linear's hosted MCP server (`https://mcp.linear.app/mcp`, streamable HTTP, OAuth 2.1).
+  Issues are tracked in Linear (`DEE-*` tickets). After cloning, run `/mcp` once and complete the
+  browser OAuth flow to authenticate; tools then cover finding/creating/updating Linear issues,
+  projects, and comments.
+
 ## Commands
 
 ```bash
