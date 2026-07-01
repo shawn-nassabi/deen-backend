@@ -154,7 +154,7 @@ class TestCheckEarlyExitNode:
         agent = self._make_agent()
         state = self._make_state(user_query="hi", is_casual=True)
         mock_model = self._mock_llm_returning("Welcome!")
-        with patch("agents.core.chat_agent.get_classifier_model", return_value=mock_model):
+        with patch("core.chat_models.get_classifier_model", return_value=mock_model):
             result = await agent._check_early_exit_node(state)
         assert result["final_response"] == "Welcome!"
         assert result["early_exit_message"] == "Welcome!"
@@ -168,7 +168,7 @@ class TestCheckEarlyExitNode:
         state = self._make_state(user_query="salam", is_casual=True)
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(side_effect=Exception("timeout"))
-        with patch("agents.core.chat_agent.get_classifier_model", return_value=mock_model):
+        with patch("core.chat_models.get_classifier_model", return_value=mock_model):
             result = await agent._check_early_exit_node(state)
         assert result["final_response"] == EARLY_EXIT_CASUAL
         assert result["early_exit_message"] == EARLY_EXIT_CASUAL
@@ -178,7 +178,7 @@ class TestCheckEarlyExitNode:
         agent = self._make_agent()
         state = self._make_state(user_query="who won the World Cup?", is_non_islamic=True)
         mock_model = self._mock_llm_returning("I focus on Islamic topics, feel free to ask!")
-        with patch("agents.core.chat_agent.get_classifier_model", return_value=mock_model):
+        with patch("core.chat_models.get_classifier_model", return_value=mock_model):
             result = await agent._check_early_exit_node(state)
         assert result["final_response"] == "I focus on Islamic topics, feel free to ask!"
         assert result["early_exit_message"] == "I focus on Islamic topics, feel free to ask!"
@@ -192,7 +192,7 @@ class TestCheckEarlyExitNode:
         state = self._make_state(user_query="recipe for pizza?", is_non_islamic=True)
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(side_effect=Exception("network error"))
-        with patch("agents.core.chat_agent.get_classifier_model", return_value=mock_model):
+        with patch("core.chat_models.get_classifier_model", return_value=mock_model):
             result = await agent._check_early_exit_node(state)
         assert result["final_response"] == EARLY_EXIT_NON_ISLAMIC
         assert result["early_exit_message"] == EARLY_EXIT_NON_ISLAMIC
@@ -203,7 +203,7 @@ class TestCheckEarlyExitNode:
         agent = self._make_agent()
         state = self._make_state(user_query="hi", is_casual=True, is_non_islamic=True)
         mock_model = self._mock_llm_returning("Casual reply!")
-        with patch("agents.core.chat_agent.get_classifier_model", return_value=mock_model):
+        with patch("core.chat_models.get_classifier_model", return_value=mock_model):
             result = await agent._check_early_exit_node(state)
         # The casual branch should have triggered (LLM was called once for casual)
         assert mock_model.ainvoke.call_count == 1
