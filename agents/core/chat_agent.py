@@ -348,7 +348,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     f"The user sent a casual or social message: '{state['user_query']}'\n\n"
                     "Reply warmly and briefly (1 sentence). Invite them to ask about "
                     "Twelver Shia Islam — theology, history, the Imams, the Quran, or practice. "
-                    "Do not fabricate any religious content."
+                    "Do not fabricate any religious content. Do not use emojis."
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
@@ -368,7 +368,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     "This question is outside your scope — you specialize in Twelver Shia Islamic "
                     "education. Warmly and briefly (1-2 sentences) let them know you focus on "
                     "Islamic topics and invite an on-topic question. "
-                    "Do NOT answer the off-topic question."
+                    "Do NOT answer the off-topic question. Do not use emojis."
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
@@ -390,7 +390,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     f"A user asked: '{state['user_query']}'\n\n"
                     "This question asks for a ruling on something harmful or unethical. "
                     "Politely decline to answer in 1-2 sentences, without judging the user. "
-                    "Do not provide any ruling."
+                    "Do not provide any ruling. Do not use emojis."
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
