@@ -127,28 +127,50 @@ class ChatAgent:
         return workflow
 
     async def _fiqh_classification_node(self, state: ChatState) -> dict:
-        logger.debug("Fiqh classification started", extra={"correlation_id": correlation_id_ctx.get()})
+        # DEE-12: deterministic intent classification runs first so casual / non-Islamic
+        # messages route to the early-exit node reliably — not left to the agent's
+        # discretionary tool calls. Fiqh classification only runs for islamic intent.
+        logger.debug("Classification started", extra={"correlation_id": correlation_id_ctx.get()})
+        result: dict = {"classification_checked": True}
+
+        try:
+            from modules.classification.classifier import aclassify_intent
+
+            intent = await aclassify_intent(state["user_query"], state.get("session_id"))
+            result["is_non_islamic"] = intent == "non_islamic"
+            result["is_casual"] = intent == "casual"
+            logger.debug("Intent classification complete", extra={"correlation_id": correlation_id_ctx.get(), "intent": intent})
+        except Exception as exc:
+            logger.error("Intent classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            result["is_non_islamic"] = False
+            result["is_casual"] = False
+
+        # Casual / non-Islamic messages exit before retrieval — skip fiqh classification.
+        if result["is_non_islamic"] or result["is_casual"]:
+            result["fiqh_category"] = ""
+            result["is_fiqh"] = False
+            return result
+
         try:
             from modules.fiqh.classifier import aclassify_fiqh_query
 
             category = await aclassify_fiqh_query(state["user_query"])
-            is_fiqh = category.startswith("VALID_")
-            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": is_fiqh})
-            return {
-                "fiqh_category": category,
-                "is_fiqh": is_fiqh,
-                "classification_checked": True,
-            }
+            result["fiqh_category"] = category
+            result["is_fiqh"] = category.startswith("VALID_")
+            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": result["is_fiqh"]})
         except Exception as exc:
             logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
-            return {
-                "fiqh_category": "",
-                "is_fiqh": False,
-                "classification_checked": True,
-                "errors": state.get("errors", []) + [f"Fiqh classification error: {str(exc)}"],
-            }
+            result["fiqh_category"] = ""
+            result["is_fiqh"] = False
+            result["errors"] = state.get("errors", []) + [f"Fiqh classification error: {str(exc)}"]
+
+        return result
 
     def _route_after_fiqh_check(self, state: ChatState) -> Literal["fiqh", "exit", "continue"]:
+        # DEE-12: casual / non-Islamic intent exits deterministically before retrieval.
+        if state.get("is_casual") or state.get("is_non_islamic"):
+            logger.debug("Routing to early exit: casual/non-Islamic intent", extra={"correlation_id": correlation_id_ctx.get()})
+            return "exit"
         category = state.get("fiqh_category", "")
         if category in {"VALID_OBVIOUS", "VALID_SMALL", "VALID_LARGE", "VALID_REASONER"}:
             logger.debug("Routing to fiqh sub-graph", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category})

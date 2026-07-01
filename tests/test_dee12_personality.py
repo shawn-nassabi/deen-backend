@@ -127,6 +127,94 @@ class TestShouldContinueRouting:
         assert result == "exit", f"Expected 'exit' for fiqh state, got '{result}'"
 
 
+class TestClassificationNodeIntent:
+    """DEE-12: _fiqh_classification_node runs deterministic intent classification first,
+    and _route_after_fiqh_check exits early for casual / non-Islamic intent — so casual
+    routing no longer depends on the agent's discretionary tool calls."""
+
+    def _make_agent(self):
+        from agents.core.chat_agent import ChatAgent
+        from agents.config.agent_config import DEFAULT_AGENT_CONFIG
+        return ChatAgent(DEFAULT_AGENT_CONFIG)
+
+    def _make_state(self, user_query="test", **overrides):
+        from agents.state.chat_state import create_initial_state
+        state = create_initial_state(user_query, "test-session-intent")
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_node_casual_sets_flag_and_skips_fiqh(self):
+        agent = self._make_agent()
+        state = self._make_state(user_query="salam!")
+        with patch("modules.classification.classifier.aclassify_intent",
+                   new_callable=AsyncMock, return_value="casual"), \
+             patch("modules.fiqh.classifier.aclassify_fiqh_query",
+                   new_callable=AsyncMock, return_value="VALID_SMALL") as m_fiqh:
+            result = await agent._fiqh_classification_node(state)
+        assert result["is_casual"] is True
+        assert result["is_non_islamic"] is False
+        assert result["is_fiqh"] is False
+        m_fiqh.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_node_non_islamic_sets_flag_and_skips_fiqh(self):
+        agent = self._make_agent()
+        state = self._make_state(user_query="who won the World Cup?")
+        with patch("modules.classification.classifier.aclassify_intent",
+                   new_callable=AsyncMock, return_value="non_islamic"), \
+             patch("modules.fiqh.classifier.aclassify_fiqh_query",
+                   new_callable=AsyncMock, return_value="VALID_SMALL") as m_fiqh:
+            result = await agent._fiqh_classification_node(state)
+        assert result["is_non_islamic"] is True
+        assert result["is_casual"] is False
+        m_fiqh.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_node_islamic_runs_fiqh(self):
+        agent = self._make_agent()
+        state = self._make_state(user_query="can I fast while traveling?")
+        with patch("modules.classification.classifier.aclassify_intent",
+                   new_callable=AsyncMock, return_value="islamic"), \
+             patch("modules.fiqh.classifier.aclassify_fiqh_query",
+                   new_callable=AsyncMock, return_value="VALID_SMALL") as m_fiqh:
+            result = await agent._fiqh_classification_node(state)
+        assert result["is_casual"] is False
+        assert result["is_non_islamic"] is False
+        assert result["is_fiqh"] is True
+        m_fiqh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_node_intent_error_defaults_safe(self):
+        agent = self._make_agent()
+        state = self._make_state(user_query="something")
+        with patch("modules.classification.classifier.aclassify_intent",
+                   new_callable=AsyncMock, side_effect=Exception("boom")), \
+             patch("modules.fiqh.classifier.aclassify_fiqh_query",
+                   new_callable=AsyncMock, return_value="OUT_OF_SCOPE_FIQH"):
+            result = await agent._fiqh_classification_node(state)
+        assert result["is_casual"] is False
+        assert result["is_non_islamic"] is False
+
+    def test_route_casual_exits(self):
+        agent = self._make_agent()
+        assert agent._route_after_fiqh_check(self._make_state(is_casual=True, fiqh_category="")) == "exit"
+
+    def test_route_non_islamic_exits(self):
+        agent = self._make_agent()
+        assert agent._route_after_fiqh_check(self._make_state(is_non_islamic=True, fiqh_category="")) == "exit"
+
+    def test_route_islamic_continues(self):
+        agent = self._make_agent()
+        state = self._make_state(is_casual=False, is_non_islamic=False, fiqh_category="OUT_OF_SCOPE_FIQH")
+        assert agent._route_after_fiqh_check(state) == "continue"
+
+    def test_route_fiqh_goes_to_fiqh(self):
+        agent = self._make_agent()
+        state = self._make_state(is_casual=False, is_non_islamic=False, fiqh_category="VALID_SMALL")
+        assert agent._route_after_fiqh_check(state) == "fiqh"
+
+
 class TestCheckEarlyExitNode:
     """_check_early_exit_node branches: casual, non-Islamic, UNETHICAL."""
 
