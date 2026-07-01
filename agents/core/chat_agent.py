@@ -248,6 +248,7 @@ class ChatAgent:
 
             if tool_name == "check_if_non_islamic_tool":
                 state["is_non_islamic"] = result_data.get("is_non_islamic", False)
+                state["is_casual"] = result_data.get("is_casual", False)
                 state["classification_checked"] = True
                 continue
 
@@ -314,14 +315,48 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     async def _check_early_exit_node(self, state: ChatState) -> dict:
         logger.debug("Check early exit node", extra={"correlation_id": correlation_id_ctx.get()})
-        from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC
+        from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC, EARLY_EXIT_CASUAL
 
+        # --- Casual branch (greetings, thanks, small talk) ---
+        if state.get("is_casual"):
+            try:
+                from core.chat_models import get_classifier_model
+                model = get_classifier_model()
+                prompt_text = (
+                    f"The user sent a casual or social message: '{state['user_query']}'\n\n"
+                    "Reply warmly and briefly (1 sentence). Invite them to ask about "
+                    "Twelver Shia Islam — theology, history, the Imams, the Quran, or practice. "
+                    "Do not fabricate any religious content."
+                )
+                from langchain_core.messages import HumanMessage
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                msg = response.content.strip()
+            except Exception as exc:
+                logger.error("LLM casual reply error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+                msg = EARLY_EXIT_CASUAL
+            return {"final_response": msg, "early_exit_message": msg}
+
+        # --- Non-Islamic branch ---
         if state.get("is_non_islamic"):
-            return {
-                "final_response": EARLY_EXIT_NON_ISLAMIC,
-                "early_exit_message": EARLY_EXIT_NON_ISLAMIC,
-            }
+            try:
+                from core.chat_models import get_classifier_model
+                model = get_classifier_model()
+                prompt_text = (
+                    f"A user asked: '{state['user_query']}'\n\n"
+                    "This question is outside your scope — you specialize in Twelver Shia Islamic "
+                    "education. Warmly and briefly (1-2 sentences) let them know you focus on "
+                    "Islamic topics and invite an on-topic question. "
+                    "Do NOT answer the off-topic question."
+                )
+                from langchain_core.messages import HumanMessage
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                msg = response.content.strip()
+            except Exception as exc:
+                logger.error("LLM non-Islamic rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+                msg = EARLY_EXIT_NON_ISLAMIC
+            return {"final_response": msg, "early_exit_message": msg}
 
+        # --- Fiqh UNETHICAL branch (unchanged) ---
         category = state.get("fiqh_category", "")
         if category == "UNETHICAL":
             # LLM-generated personalized rejection message (D-12)
@@ -453,7 +488,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             }
 
     def _should_continue(self, state: ChatState) -> Literal["continue", "generate", "exit", "end"]:
-        if state.get("is_non_islamic") or state.get("is_fiqh"):
+        if state.get("is_non_islamic") or state.get("is_fiqh") or state.get("is_casual"):
             logger.debug("Routing: early exit", extra={"correlation_id": correlation_id_ctx.get()})
             return "exit"
 
