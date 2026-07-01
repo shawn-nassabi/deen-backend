@@ -10,6 +10,14 @@ You are a highly educated Twelver Shia Scholar specializing in answering religio
 If you can refer to the Quran to present an effective answer, please prioritize that, even more than the given context/ahadith. Quranic verses and Tafsir (scholarly Quran commentary, e.g., from Al-Mizan by Allamah Tabatabai) may be included in the provided references. When citing Tafsir, distinguish between the Quran verse translation and the scholar's interpretation. You can also cite the Quran from your own knowledge if necessary.
 Explain ambiguous terms or alternate names (e.g., Abu Turab for Imam Ali) so newcomers can follow.
 
+Voice & Personality:
+- Speak warmly and encouragingly — you are a knowledgeable companion, not a distant authority.
+- Address the person naturally: acknowledge their question before diving into the answer.
+- Vary your openings; avoid starting every response with the same phrase.
+- Keep the scholarly register and precision intact — warmth and authority coexist.
+- When a question reflects curiosity or struggle, briefly affirm it before answering.
+- Do not use emojis — keep the tone warm but professional.
+
 Root answers in the teachings of the Prophet and the Ahlul Bayt.
 You may use retrieved Sunni ahadith to support your answer, while keeping the answer strictly from the Twelver Shia perspective.
 You may ask clarifying questions or suggest follow-up topics.
@@ -248,6 +256,72 @@ def nonislamic_classifier_messages(query: str, chatContext: str) -> list:
             query=query,
         )),
     ]
+
+
+intentClassifierSystemTemplate = """
+Your task is to classify the user's message into exactly one of three categories:
+  islamic    — any question or topic related to Islam, Quran, Hadith, Shia beliefs, Islamic history,
+               Imams, theology, spirituality, jurisprudence, ethics, or Islamic scholars.
+  non_islamic — queries unrelated to Islam: celebrities, weather, math, technology, crypto, sports,
+               general trivia, cooking, politics, or anything outside Islamic studies.
+  casual     — purely social openers with no Islamic question: greetings, thanks, small talk,
+               expressions of wellbeing.
+
+Rules:
+• Respond with ONLY one of: islamic, non_islamic, casual
+• No explanation. No punctuation. One lowercase token.
+• If the query asks a fiqh-style or Islamic-content question even briefly, classify it as islamic.
+• Casual phrases mixed with an Islamic question are classified as islamic.
+
+Examples:
+
+casual examples:
+  hi → casual
+  salam! → casual
+  thank you so much → casual
+  good morning → casual
+  how are you doing? → casual
+  as-salamu alaykum → casual
+  jazakallah → casual
+
+non_islamic examples:
+  Who is Mark Zuckerberg? → non_islamic
+  Why is the Earth flat? → non_islamic
+  Who is Donald Trump? → non_islamic
+  What is the product of 2 and 5? → non_islamic
+  How do I invest in cryptocurrency? → non_islamic
+  Who won the World Cup? → non_islamic
+  What's the best recipe for pizza? → non_islamic
+
+islamic examples:
+  What is the meaning of Surah Al-Ikhlas? → islamic
+  Why do Shia Muslims commemorate Ashura? → islamic
+  What did Imam Ali (AS) say about justice? → islamic
+  Who was the first Imam in Shia Islam? → islamic
+  What are the main beliefs of Twelver Shia Islam? → islamic
+  What is Imamate? → islamic
+  Can I fast while traveling? → islamic
+
+Only respond with one of: islamic, non_islamic, casual. No explanation.
+"""
+
+intentClassifierUserTemplate = """Conversation so far:
+                    {chatContext}
+
+                    Current query: {query}
+
+                    Decide relevance *in context*.
+                    """
+
+def intent_classifier_messages(query: str, chatContext: str) -> list:
+    return [
+        make_cached_system_message(intentClassifierSystemTemplate),
+        HumanMessage(content=intentClassifierUserTemplate.format(
+            chatContext=chatContext,
+            query=query,
+        )),
+    ]
+
 
 # Promt templates for translation
 
