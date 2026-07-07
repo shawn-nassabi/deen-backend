@@ -1,9 +1,14 @@
 ---
 phase: 260707-hyu-dee-68-multilingual-chatbot-response-qua
 verified: 2026-07-07T00:00:00Z
-status: human_needed
-score: 3/3 must-haves verified (code inspection); test execution not run in this environment
+status: passed
+score: 3/3 must-haves verified (code inspection + Docker test execution)
 has_blocking_gaps: false
+test_execution:
+  environment: "Docker (python:3.11-slim, prod-faithful) via verify-deen skill"
+  run_1: "docker compose run --rm -e REDIS_URL=redis://127.0.0.1:1/0 api pytest tests/test_dee68_multilingual_generation.py tests/test_dee12_personality.py -q → 42 passed, 3 deselected (13 DEE-68 deterministic + DEE-12 deterministic; 3 deselected = DEE-12 real_llm). No regressions."
+  run_2: "docker compose run --rm -e REDIS_URL=redis://127.0.0.1:1/0 api pytest tests/test_dee68_multilingual_quality.py -q → 6 deselected, no errors (real_llm harness collects cleanly, gated off by default)."
+  note: "Native venv could not run pytest (Intel-Mac torch==2.6.0 has no x86_64 wheel; ceiling is 2.2.2). Docker is the repo's standard verification path and sidesteps this."
 human_verification:
   - test: "Run `source venv/bin/activate && pip install -r requirements.txt && pytest tests/test_dee68_multilingual_generation.py -q` (create/populate venv first if missing pytest — see note below)"
     expected: "13 passed, matching SUMMARY.md's reported test evidence (6 languages x 2 test classes + 1 english control case)"

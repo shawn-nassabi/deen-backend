@@ -94,7 +94,7 @@ None.
 | 260530-ddo | Skip quiz pages in hikmah upsert, attach MCQs to last text page, fix meta.total_pages count | 2026-05-30 | 64e3635 | Complete | [260530-ddo-skip-quiz-pages-in-hikmah-upsert-attach-](./quick/260530-ddo-skip-quiz-pages-in-hikmah-upsert-attach-/) |
 | 260629-ia2 | Fix DEE-55 Ask Deen over-refusal on short meaningful selected text | 2026-06-29 | 14b6480 | Complete | [260629-ia2-fix-dee-55-ask-deen-over-refusal-on-shor](./quick/260629-ia2-fix-dee-55-ask-deen-over-refusal-on-shor/) |
 | 260701-j8v | Improve chatbot personality: warmer voice, dynamic non-Islamic refusal, casual-message handling (DEE-12) | 2026-07-01 | 3c376a5 | Verified | [260701-j8v-improve-chatbot-personality-warmer-answe](./quick/260701-j8v-improve-chatbot-personality-warmer-answe/) |
-| 260707-hyu | DEE-68 multilingual chatbot response quality — fix non-streaming path to honor target_language + deterministic language-injection tests + opt-in real_llm 6-language eval harness | 2026-07-07 | 3e65bc9 | Needs Review | [260707-hyu-dee-68-multilingual-chatbot-response-qua](./quick/260707-hyu-dee-68-multilingual-chatbot-response-qua/) |
+| 260707-hyu | DEE-68 multilingual chatbot response quality — fix non-streaming path to honor target_language + deterministic language-injection tests + opt-in real_llm 6-language eval harness | 2026-07-07 | 3e65bc9 | Verified | [260707-hyu-dee-68-multilingual-chatbot-response-qua](./quick/260707-hyu-dee-68-multilingual-chatbot-response-qua/) |
 
 ## Session Continuity
 
