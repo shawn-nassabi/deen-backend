@@ -31,6 +31,7 @@ from agents.tools import (
     translate_to_english_tool,
 )
 from agents.tools.retrieval_tools import retrieve_quran_tafsir_tool_cached
+from core import prompt_templates
 from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
@@ -308,17 +309,11 @@ class ChatAgent:
 
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
-        generation_messages = [
-            make_cached_system_message(AGENT_SYSTEM_PROMPT),
-            HumanMessage(
-                content=f"""User query: {state['user_query']}
-
-Retrieved references:
-{references}
-
-Generate a comprehensive, accurate response that directly addresses the user's question using the retrieved sources. Cite specific books, hadith numbers, and scholars when referencing the sources."""
-            ),
-        ]
+        generation_messages = prompt_templates.generator_messages(
+            query=state["user_query"],
+            references=references,
+            target_language=state["target_language"],
+        )
 
         try:
             from core.chat_models import get_generator_model
