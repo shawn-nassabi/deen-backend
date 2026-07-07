@@ -37,6 +37,26 @@ FATWA_SELF_ATTRIBUTION_PHRASES = [
     "this is my fatwa",
 ]
 
+# Fallback string set by ChatAgent._generate_response_node's `except` block when
+# the LLM call fails (e.g. Anthropic 529 overload / APITimeoutError after retries).
+# Kept in sync with agents/core/chat_agent.py. A response equal to this — or an
+# `errors` entry naming a generation failure — means the model never actually
+# produced an answer, so language-quality assertions would be meaningless.
+GENERATION_ERROR_SENTINEL = "I apologize, but I encountered an error generating the response."
+
+
+def _generation_failed_upstream(result: dict, final_response: str) -> str | None:
+    """Return a human-readable reason if generation failed upstream (transient
+    LLM/API error), else None. Used to skip — not fail — a language case when the
+    API was unavailable, so infra outages don't masquerade as quality regressions."""
+    if final_response.strip() == GENERATION_ERROR_SENTINEL:
+        return "response is the generation-error fallback (LLM call failed)"
+    errors = result.get("errors") or []
+    for err in errors:
+        if "generation error" in str(err).lower():
+            return f"agent recorded a generation error: {err}"
+    return None
+
 
 def _arabic_script_ratio(text: str) -> float:
     """Fraction of alphabetic characters in `text` that fall within the
@@ -73,6 +93,15 @@ class TestMultilingualQuality:
         )
 
         final_response = result.get("final_response") or ""
+
+        # Transient-failure guard: if the LLM call itself failed (Anthropic 529 /
+        # timeout after retries), the node returns an error fallback. That is an
+        # infrastructure outage, not a language-quality defect — skip rather than
+        # fail so this eval stays trustworthy/repeatable for sign-off.
+        skip_reason = _generation_failed_upstream(result, final_response)
+        if skip_reason is not None:
+            pytest.skip(f"Generation unavailable for '{lang}' ({skip_reason}) — transient API error, not a quality failure")
+
         assert len(final_response) > 50, (
             f"Response for '{lang}' too short or empty: '{final_response}'"
         )
