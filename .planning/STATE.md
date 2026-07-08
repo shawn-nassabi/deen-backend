@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-04 after v1.4 milestone archived)
 Milestone v1.4 complete — all 3 phases, 9 plans shipped.
 Next: `/gsd-new-milestone` to define v1.5 requirements and roadmap.
 Status: v1.4 milestone complete — OBS-02 human action required after next deploy
-Last activity: 2026-07-08 — Completed quick task 260707-pxt: DEE-67 reference-lookup selected-language translations (Postgres sidecar + join-after-retrieval + offline build-not-run batch MT job); needs Docker verification (deterministic tests + alembic upgrade head)
+Last activity: 2026-07-08 — Completed quick task 260708-ecy: DEE-67 follow-up disabling Quran MT (DISABLED_REF_TYPES guard so --ref-type all runs hadith+tafsir only; 13 tests pass)
 
 Progress bar: `▓▓▓▓▓▓░░░░` 67% (2/3 phases complete)
 
@@ -96,6 +96,7 @@ None.
 | 260701-j8v | Improve chatbot personality: warmer voice, dynamic non-Islamic refusal, casual-message handling (DEE-12) | 2026-07-01 | 3c376a5 | Verified | [260701-j8v-improve-chatbot-personality-warmer-answe](./quick/260701-j8v-improve-chatbot-personality-warmer-answe/) |
 | 260707-hyu | DEE-68 multilingual chatbot response quality — fix non-streaming path to honor target_language + deterministic language-injection tests + opt-in real_llm 6-language eval harness | 2026-07-07 | 3e65bc9 | Verified | [260707-hyu-dee-68-multilingual-chatbot-response-qua](./quick/260707-hyu-dee-68-multilingual-chatbot-response-qua/) |
 | 260707-pxt | DEE-67 reference-lookup selected-language translations — Postgres sidecar table + join-after-retrieval enrichment (/references + SSE) + offline build-not-run batch MT job (personal key / Sonnet 5) | 2026-07-08 | cfc65d7 | Verified (migration pending live apply) | [260707-pxt-dee-67-reference-lookup-selected-languag](./quick/260707-pxt-dee-67-reference-lookup-selected-languag/) |
+| 260708-ecy | DEE-67 follow-up: hold Quran MT out of translate_references.py via DISABLED_REF_TYPES guard (--ref-type all → hadith+tafsir only) + deterministic tests | 2026-07-08 | 1eec98f | Complete | [260708-ecy-dee-67-follow-up-disable-quran-mt-in-scr](./quick/260708-ecy-dee-67-follow-up-disable-quran-mt-in-scr/) |
 
 ## Session Continuity
 
