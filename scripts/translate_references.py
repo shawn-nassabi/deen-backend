@@ -1,7 +1,7 @@
 """
-Offline batch MT job for DEE-67: translate the hadith + quran_translation + tafsir_text
-reference corpus into the `reference_translations` Postgres sidecar table, across the
-6 canonical languages.
+Offline batch MT job for DEE-67: translate the hadith + tafsir_text reference corpus
+(Quran translation MT is currently held out — see DISABLED_REF_TYPES) into the
+`reference_translations` Postgres sidecar table, across the 6 canonical languages.
 
 This is a re-runnable, idempotent, human-triggered CLI tool -- it is NEVER invoked by
 application code, a route, or CI. It uses a DEDICATED personal Anthropic API key
@@ -49,6 +49,16 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES = ["arabic", "farsi", "urdu", "german", "bahasa melayu", "french"]
 REF_TYPE_CHOICES = ["hadith", "quran_translation", "tafsir_text"]
+
+# Quran MT hold-out (DEE-67 follow-up): the stored Quran text
+# (`english_quran_translation`) is already an English rendering of the Arabic, so
+# running it through this MT job would pivot-translate (Arabic -> English -> target
+# language), double-translating the literal Qur'anic text. Quran should use published
+# direct translations instead. Hadith and tafsir MT (translated from their own stored
+# English) are unaffected and remain enabled. To re-enable Quran MT, remove
+# "quran_translation" from this set.
+DISABLED_REF_TYPES = {"quran_translation"}
+
 DEFAULT_MODEL = "claude-sonnet-5"
 
 TRANSLATION_SYSTEM_PROMPT = (
@@ -99,6 +109,27 @@ def parse_args(argv=None) -> argparse.Namespace:
         help=f"Translation model/version string (default: {DEFAULT_MODEL})",
     )
     return parser.parse_args(argv)
+
+
+def _resolve_enabled_ref_types(ref_type_arg: str) -> list[str]:
+    """Resolve the requested `--ref-type` CLI arg into the enabled subset of
+    REF_TYPE_CHOICES, filtering out anything in DISABLED_REF_TYPES.
+
+    Logs a WARNING for each requested ref_type that is currently disabled
+    (Quran MT hold-out). Order is preserved from REF_TYPE_CHOICES.
+    """
+    requested = REF_TYPE_CHOICES if ref_type_arg == "all" else [ref_type_arg]
+    enabled = [rt for rt in requested if rt not in DISABLED_REF_TYPES]
+    skipped = [rt for rt in requested if rt in DISABLED_REF_TYPES]
+
+    for ref_type in skipped:
+        logger.warning(
+            "ref_type=%s is disabled for now (Quran MT hold-out) and will be skipped. "
+            "Remove it from DISABLED_REF_TYPES in scripts/translate_references.py to re-enable.",
+            ref_type,
+        )
+
+    return enabled
 
 
 def _get_translation_client() -> Anthropic:
@@ -257,7 +288,15 @@ def run_batch(
 def main() -> None:
     args = parse_args()
     languages = [lang.strip().lower() for lang in args.languages.split(",") if lang.strip()]
-    ref_types = REF_TYPE_CHOICES if args.ref_type == "all" else [args.ref_type]
+    ref_types = _resolve_enabled_ref_types(args.ref_type)
+
+    if not ref_types:
+        logger.error(
+            "No enabled ref_types remain after filtering DISABLED_REF_TYPES for --ref-type=%s. "
+            "Use --ref-type hadith or --ref-type tafsir_text instead.",
+            args.ref_type,
+        )
+        return
 
     translation_client = None if args.dry_run else _get_translation_client()
     pc_client = Pinecone(api_key=PINECONE_API_KEY)
