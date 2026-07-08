@@ -23,8 +23,10 @@ import pytest
 from core.utils import compress_text
 from scripts.translate_references import (
     DEFAULT_MODEL,
+    DISABLED_REF_TYPES,
     SUPPORTED_LANGUAGES,
     _get_translation_client,
+    _resolve_enabled_ref_types,
     parse_args,
     run_batch,
     translate_text,
@@ -44,6 +46,31 @@ class TestParseArgs:
         assert args.dry_run is False
         assert args.model == DEFAULT_MODEL
         assert args.limit is None
+
+
+# ================================================================
+# _resolve_enabled_ref_types (DEE-67 follow-up: Quran MT hold-out)
+# ================================================================
+
+class TestResolveEnabledRefTypes:
+    def test_all_excludes_quran_translation(self):
+        assert _resolve_enabled_ref_types("all") == ["hadith", "tafsir_text"]
+
+    def test_quran_translation_alone_yields_empty_list(self):
+        assert _resolve_enabled_ref_types("quran_translation") == []
+
+    def test_single_enabled_ref_type_passthrough(self):
+        assert _resolve_enabled_ref_types("hadith") == ["hadith"]
+        assert _resolve_enabled_ref_types("tafsir_text") == ["tafsir_text"]
+
+    def test_disabled_ref_types_contains_quran_translation(self):
+        assert DISABLED_REF_TYPES == {"quran_translation"}
+
+    def test_disabled_ref_type_logs_warning(self, caplog):
+        with caplog.at_level("WARNING"):
+            _resolve_enabled_ref_types("quran_translation")
+
+        assert "quran_translation" in caplog.text.lower()
 
 
 # ================================================================
