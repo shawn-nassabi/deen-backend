@@ -25,6 +25,10 @@ async def references_pipeline(
     credentials: JWTAuthorizationCredentials = Depends(auth),
     sect: str = Query("both", enum=["sunni", "shia", "both"]),
     limit: int = Query(10, ge=1, le=50, description="Number of references to fetch (1-50)"),
+    language: str = Query(
+        "english",
+        description="Selected language for translated reference text (e.g. 'arabic', 'farsi', 'urdu', 'german', 'bahasa melayu', 'french'). Defaults to English -- no translation join performed.",
+    ),
 ):
     user_query = request.user_query.strip()
     corr_id = correlation_id_ctx.get()
@@ -38,7 +42,7 @@ async def references_pipeline(
         raise HTTPException(status_code=400, detail="Please provide an appropriate query.")
 
     try:
-        results = await pipeline.references_pipeline(user_query, sect, limit)
+        results = await pipeline.references_pipeline(user_query, sect, limit, language)
         logger.info(
             "References request completed",
             extra={"correlation_id": corr_id, "endpoint": "/references"},

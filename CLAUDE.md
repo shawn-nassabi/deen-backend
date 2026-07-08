@@ -40,6 +40,13 @@ python scripts/ingest_fiqh.py                  # full: parse PDF + embed + upser
 python scripts/ingest_fiqh.py --encoder-only   # local-only: regenerate data/fiqh_bm25_encoder.json
                                                 # (gitignored; required for fiqh queries to work locally)
 
+# Reference translation batch job (DEE-67, personal key only -- do NOT run without setting TRANSLATION_ANTHROPIC_API_KEY)
+export TRANSLATION_ANTHROPIC_API_KEY=sk-ant-...   # personal key, never the app's ANTHROPIC_API_KEY
+python scripts/translate_references.py --dry-run --limit 5   # preview counts, no Anthropic/DB calls
+python scripts/translate_references.py --ref-type hadith --languages urdu --limit 20   # small live sample
+python scripts/translate_references.py   # full corpus x all 6 languages (only after sampling looks correct)
+# Note: run `alembic upgrade head` once (creates the reference_translations table) before this script's writes will succeed.
+
 # Docker
 docker compose build --no-cache && docker compose up -d
 
