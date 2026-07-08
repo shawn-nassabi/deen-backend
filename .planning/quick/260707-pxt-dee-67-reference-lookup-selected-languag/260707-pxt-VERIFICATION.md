@@ -1,9 +1,14 @@
 ---
 phase: 260707-pxt
 verified: 2026-07-07T00:00:00Z
-status: human_needed
-score: 6/6 must-haves verified (code inspection)
+status: passed
+score: 6/6 must-haves verified (code inspection + Docker test run + offline migration DDL)
 has_blocking_gaps: false
+test_execution:
+  deterministic: "docker compose run --rm -e REDIS_URL=redis://127.0.0.1:1/0 api pytest tests/test_reference_translations.py tests/test_translate_references.py -q -> 17 passed (user-confirmed in Docker)."
+  migration_offline: "docker compose run --rm api alembic upgrade onboarding_profiles_001:head --sql -> clean transactional CREATE TABLE reference_translations with composite PK + nullable reviewed_at. Valid."
+  migration_apply: "NOT applied to live DB — shared Supabase host unresolvable from local Docker (paused / IPv4-vs-pooler DNS). Applies at deploy via alembic upgrade head."
+  batch_job: "scripts/translate_references.py NOT run (build-only by design; needs personal TRANSLATION_ANTHROPIC_API_KEY + live services)."
 overrides_applied: 0
 human_verification:
   - test: "Run `alembic upgrade head` against a reachable Postgres (e.g. Supabase) and then `alembic heads`"
