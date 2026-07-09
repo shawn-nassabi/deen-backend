@@ -17,7 +17,11 @@ from db.config import settings
 config = context.config
 
 # Escape % to avoid ConfigParser interpolation issues
-escaped_url = settings.DATABASE_URL.replace("%", "%%")
+# Migrations prefer a session-mode connection (5432) via MIGRATION_DATABASE_URL
+# over the transaction-mode pooler (6543) used by the app's sync engine.
+# Falls back to DATABASE_URL when unset — behavior unchanged without the var.
+_migration_url = settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL
+escaped_url = _migration_url.replace("%", "%%")
 config.set_main_option("sqlalchemy.url", escaped_url)
 
 # Interpret the config file for Python logging.
