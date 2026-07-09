@@ -7,6 +7,9 @@ from .config import settings
 
 
 def _build_async_database_url() -> str:
+    override = getattr(settings, "ASYNC_DATABASE_URL", None)
+    if override:
+        return override
     return URL.create(
         drivername="postgresql+asyncpg",
         username=settings.DB_USER,
@@ -23,7 +26,9 @@ async_engine = create_async_engine(
     pool_pre_ping=True,
     echo=False,
     # Bounded pool — see db/session.py for the full connection-budget math.
-    # Per worker: this async engine (2+1=3) + the sync engine (2+1=3) = 6;
+    # Sole consumer of the Supabase session-mode pooler (5432, 15-client cap).
+    # Per worker 2+1=3; Dockerfile `-w 2` -> 6 < 15, headroom 9.
+    # Sync engine moved to transaction mode (6543) — see db/session.py.
     # Dockerfile `-w 2` -> 12 < 15 (Supabase session-mode client cap).
     # Recompute if the worker count changes.
     pool_size=2,
