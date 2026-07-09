@@ -504,3 +504,36 @@ A speedup of 1.0 means full serialisation; the Phase 7 gate requires
 }
 ```
 
+## phase-5 async-fiqh-and-routes (DEE-44) — 2026-07-09T09:34:07+00:00
+
+- mode: `in-process`
+- n: 10
+- wall_clock_s: **2.6753**
+- p50_s / p95_s: 1.208 / 2.6491
+- throughput_rps: 3.7378
+- speedup_vs_serial: **2.8034**
+
+```json
+{
+  "label": "phase-5 async-fiqh-and-routes (DEE-44)",
+  "mode": "in-process",
+  "n": 10,
+  "stubs": {
+    "llm_sleep_s": 0.2,
+    "retrieval_sleep_s": 0.1,
+    "per_token_sleep_s": 0.05,
+    "expected_per_request_s": 0.75,
+    "expected_serial_wall_s": 7.5
+  },
+  "wall_clock_s": 2.6753,
+  "p50_s": 1.208,
+  "p95_s": 2.6491,
+  "min_s": 1.0699,
+  "max_s": 2.6491,
+  "mean_s": 1.4575,
+  "throughput_rps": 3.7378,
+  "speedup_vs_serial": 2.8034,
+  "timestamp": "2026-07-09T09:34:07+00:00"
+}
+```
+

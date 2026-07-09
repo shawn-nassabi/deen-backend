@@ -10,7 +10,7 @@ Public interface: assess_evidence(query, docs) -> SEAResult
 from __future__ import annotations
 import logging
 from typing import Literal
-
+from pydantic import BaseModel, model_validator
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from core import chat_models
@@ -21,11 +21,18 @@ logger = logging.getLogger(__name__)
 
 
 class Finding(BaseModel):
-    description: str    # what the query requires (one atomic finding)
-    confirmed: bool     # True if found in evidence (directly or by logical inference)
-    citation: str       # exact quote from evidence if confirmed, "" if not confirmed
-    gap_summary: str    # description of what is missing, "" if confirmed
+    description: str        # what the query requires (one atomic finding)
+    confirmed: bool         # True if found in evidence (directly or by logical inference)
+    citation: str = ""      # exact quote from evidence if confirmed; LLM may omit when not confirmed
+    gap_summary: str = ""   # what is missing; LLM may omit when confirmed (PYTHON-FASTAPI-T)
 
+    @model_validator(mode="after")
+    def _normalize(self) -> "Finding":
+        # An unconfirmed finding must always carry a gap description for the refiner.
+        if not self.confirmed and not self.gap_summary:
+            self.gap_summary = "No supporting evidence retrieved for this finding."
+        return self
+    
 
 class SEAResult(BaseModel):
     findings: list[Finding]
@@ -49,7 +56,8 @@ Your job:
 
 Be granular: decompose the query into the smallest independently verifiable findings.
 For citations, use an exact quote from the evidence — do not paraphrase.
-For gap_summary, briefly describe what information is missing from the evidence."""
+For gap_summary, briefly describe what information is missing from the evidence.
+Always include both "citation" and "gap_summary" for every finding — use an empty string "" when not applicable, never omit the field."""
 
 def _build_messages(query: str, evidence: str) -> list:
     return [
