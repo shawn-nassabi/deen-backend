@@ -28,6 +28,6 @@ def generate_sparse_embedding(query: str):
     normalized_query = proprecessor.normalize_text(query)
     vec = getSparseEmbedder().fit_transform([normalized_query])
     vec_array = vec[0].toarray().squeeze()
-    indices = np.nonzero(vec_array)[0].tolist()
+    indices = np.atleast_1d(vec_array).nonzero()[0].tolist()
     values = vec_array[indices].tolist()
     return {"indices": indices, "values": values}
