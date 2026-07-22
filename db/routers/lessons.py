@@ -5,6 +5,7 @@ from ..session import get_db
 from ..crud.lessons import lesson_crud
 from ..models.lessons import Lesson
 from ..schemas.lessons import LessonCreate, LessonRead, LessonUpdate
+from services import lesson_translation_service
 
 router = APIRouter(prefix="/lessons", tags=["lessons"])
 
@@ -22,7 +23,14 @@ def list_lessons(
     hikmah_tree_id: Optional[int] = None,
     skip: int = 0,
     limit: int = Query(50, le=200),
-    order_by: Optional[str] = "order_position"
+    order_by: Optional[str] = "order_position",
+    language: str = Query(
+        "english",
+        description="Selected display language (e.g. 'arabic', 'farsi', 'urdu', 'german', "
+        "'bahasa melayu', 'french'). Defaults to English -- no translation lookup performed. "
+        "NOT the same as the existing language_code filter, which selects the lesson's "
+        "SOURCE language.",
+    ),
 ):
     query = db.query(Lesson)
     if q:
@@ -42,13 +50,30 @@ def list_lessons(
     else:
         query = query.order_by(Lesson.id.asc())
 
-    return query.offset(skip).limit(limit).all()
+    results = query.offset(skip).limit(limit).all()
+    lesson_translation_service.apply_translations(
+        db, "lesson", results, fields=["title", "summary"], language=language
+    )
+    return results
 
 @router.get("/{lesson_id}", response_model=LessonRead)
-def get_lesson(lesson_id: int, db: Session = Depends(get_db)):
+def get_lesson(
+    lesson_id: int,
+    db: Session = Depends(get_db),
+    language: str = Query(
+        "english",
+        description="Selected display language (e.g. 'arabic', 'farsi', 'urdu', 'german', "
+        "'bahasa melayu', 'french'). Defaults to English -- no translation lookup performed. "
+        "NOT the same as the existing language_code filter, which selects the lesson's "
+        "SOURCE language.",
+    ),
+):
     obj = lesson_crud.get(db, lesson_id)
     if not obj:
         raise HTTPException(404, "Lesson not found")
+    lesson_translation_service.apply_translations(
+        db, "lesson", [obj], fields=["title", "summary"], language=language
+    )
     return obj
 
 @router.patch("/{lesson_id}", response_model=LessonRead)
