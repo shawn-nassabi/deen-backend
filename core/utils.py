@@ -3,6 +3,7 @@ import asyncio
 import traceback
 import base64
 import gzip
+import hashlib
 from typing import Optional
 
 from services import reference_translation_service
@@ -401,3 +402,10 @@ def decompress_text(compressed_text: str) -> str:
         return ""
     compressed_bytes = base64.b64decode(compressed_text.encode("utf-8"))
     return gzip.decompress(compressed_bytes).decode("utf-8")
+
+
+def source_text_hash(text: str) -> str:
+    """Deterministic sha256 hex digest of source text, used by scripts/translate_lessons.py
+    (DEE-69) to detect when a translated row is stale relative to its live source text.
+    Never raises -- falsy input hashes as the empty string."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()

@@ -47,6 +47,13 @@ python scripts/translate_references.py --ref-type hadith --languages urdu --limi
 python scripts/translate_references.py   # full corpus x all 6 languages (only after sampling looks correct)
 # Note: run `alembic upgrade head` once (creates the reference_translations table) before this script's writes will succeed.
 
+# Lesson/quiz/hikmah translation batch job (DEE-69, human-triggered only -- uses local `claude` CLI, no Anthropic API key/credits)
+python scripts/translate_lessons.py --dry-run --limit 5   # preview per-entity-type/per-language counts from Postgres; no claude CLI calls, no writes
+python scripts/translate_lessons.py --entity-type lesson_content --languages urdu --limit 5   # small live sample
+python scripts/translate_lessons.py   # full corpus x all 5 entity types x all 6 languages (only after sampling looks correct)
+# Note: run `alembic upgrade head` once (creates the lesson_translations table) before this script's writes will succeed.
+# Qur'an-preservation relies solely on the hardened system prompt (no reliable per-row Quran marker exists in lesson_content -- see db/models/lesson_translations.py docstring). Sample-review translated content_body/explanation fields for embedded Qur'anic verses before enabling any language in production, per dee63-translation-review-workflow.
+
 # Docker
 docker compose build --no-cache && docker compose up -d
 
