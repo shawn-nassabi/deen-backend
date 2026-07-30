@@ -105,6 +105,13 @@ TRANSLATION_SYSTEM_PROMPT = (
     "summary/description, NEVER describe or comment on the input, and NEVER output "
     "anything other than the translation itself. If the input is short, your "
     "translation is short. "
+    "The input may also be a standalone quiz question or a single answer option that "
+    "refers to 'the lesson', 'the text', or a passage that is NOT included with it -- "
+    "this is expected and fine. Do NOT ask for that lesson or passage, do NOT attempt "
+    "to answer the question, and do NOT assess whether any statement is correct, "
+    "complete, or well-formed. Translate the exact words you are given even if they "
+    "appear standalone, incomplete, or factually incorrect -- every input is "
+    "translatable. "
     "Preserve all meaning, terminology, honorifics, and the Twelver Shia theological "
     "framing of the source text exactly. Do not add interpretation, commentary, "
     "opinion, or fatwa-like guidance of your own. Do not omit or summarize any part "
@@ -121,7 +128,10 @@ TRANSLATION_SYSTEM_PROMPT = (
     "text EXACTLY character-for-character in its original script -- NEVER translate, "
     "transliterate, paraphrase, or alter it in any way. Translate only the surrounding "
     "prose, explanation, and commentary into {language}. This rule is absolute and "
-    "takes priority over completeness of translation."
+    "takes priority over completeness of translation.\n\n"
+    "The text to translate is provided delimited between the markers <<<BEGIN_SOURCE>>> "
+    "and <<<END_SOURCE>>>. Translate ONLY the text between those markers into {language}, "
+    "and do NOT include the markers themselves in your output."
 )
 
 
@@ -198,15 +208,43 @@ def _preflight_claude_cli() -> None:
 # Translation + upsert
 # ------------------------------------------------------------------ #
 
-def translate_text(*, model: str, text: str, language: str) -> str:
-    """Translate a single piece of lesson/quiz text into `language` by shelling out to
-    the local `claude` CLI in print mode.
+# Conservative refusal/meta-response signatures. These phrases appear ONLY when the model
+# declines to translate -- asking for "the lesson"/"the text", apologizing, or editorializing
+# on a quiz distractor -- and never inside a faithful translation of lesson/quiz content, so
+# a match means the output is not a usable translation and the call is retried (see
+# translate_text). Kept multi-word/specific to avoid false positives on legitimate content.
+REFUSAL_SIGNATURES = (
+    # English
+    "i notice this statement", "i should flag", "i cannot translate", "was not provided",
+    "not provided to me", "please provide the", "please share the", "i apologize, but",
+    "no text was provided", "cannot process this request", "it seems you have",
+    # German
+    "wurde mir nicht", "liegt mir nicht vor", "bitte teilen sie mir", "bitte senden sie mir",
+    "kein text zur übersetzung", "es tut mir leid, aber",
+    # French
+    "voici la traduction", "il semble que vous", "veuillez fournir", "veuillez me fournir",
+    "je ne peux pas traduire",
+    # Bahasa Melayu
+    "maaf, saya", "maaf, tetapi", "maaf, tiada", "sila berikan teks", "sila kongsikan",
+    "tidak dapat memproses", "tidak dapat mengesan", "tiada teks untuk", "tidak diberikan dalam mesej",
+    # Farsi / Urdu
+    "این متن به نظر می‌رسد", "ارائه نکرده", "لطفاً متن", "گنجانده نشده",
+    "معذرت خواہ", "متن درکار", "فراہم نہیں کیا گیا", "فراہم کریں تاکہ", "براہ کرم مکمل",
+)
 
-    Uses the Claude Code subscription (OAuth), not the Anthropic API -- no API credits are
-    consumed. Raises on non-zero exit, timeout, or empty output so the caller's per-item
-    error handling logs it and continues with the run.
-    """
-    system_prompt = TRANSLATION_SYSTEM_PROMPT.format(language=language)
+# Re-invoke count when the CLI returns a refusal/meta-response instead of a translation.
+# Refusals are non-deterministic, so a couple of retries clears almost all of them.
+MAX_TRANSLATION_ATTEMPTS = 4
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """True if `text` matches a known refusal/meta-response signature (not a translation)."""
+    low = text.lower()
+    return any(sig in low for sig in REFUSAL_SIGNATURES)
+
+
+def _invoke_claude(*, model: str, text: str, system_prompt: str) -> str:
+    """Single `claude -p` invocation. Raises on non-zero exit, timeout, or empty output."""
     result = subprocess.run(
         [
             "claude",
@@ -224,7 +262,9 @@ def translate_text(*, model: str, text: str, language: str) -> str:
             "",
             "--no-session-persistence",
         ],
-        input=text,
+        # Delimit the source so the model never mistakes lesson/quiz content (e.g. a
+        # question that says "According to the lesson...") for an instruction to answer.
+        input=f"<<<BEGIN_SOURCE>>>\n{text}\n<<<END_SOURCE>>>",
         capture_output=True,
         text=True,
         timeout=CLAUDE_TIMEOUT_SECONDS,
@@ -237,6 +277,35 @@ def translate_text(*, model: str, text: str, language: str) -> str:
     if not translated:
         raise RuntimeError("claude CLI returned empty output")
     return translated
+
+
+def translate_text(*, model: str, text: str, language: str) -> str:
+    """Translate a single piece of lesson/quiz text into `language` by shelling out to
+    the local `claude` CLI in print mode.
+
+    Uses the Claude Code subscription (OAuth), not the Anthropic API -- no API credits are
+    consumed. Raises on non-zero exit, timeout, or empty output.
+
+    Guards against the model returning a refusal/meta-response ("please provide the lesson
+    text", editorializing on a quiz distractor, etc.) instead of a translation: such output
+    is detected via REFUSAL_SIGNATURES and re-attempted up to MAX_TRANSLATION_ATTEMPTS times
+    (refusals are flaky). If it still refuses, this raises so the caller logs + skips the
+    item (leaving a gap a later re-run fills) rather than committing a non-translation.
+    """
+    system_prompt = TRANSLATION_SYSTEM_PROMPT.format(language=language)
+    translated = ""
+    for attempt in range(1, MAX_TRANSLATION_ATTEMPTS + 1):
+        translated = _invoke_claude(model=model, text=text, system_prompt=system_prompt)
+        if not _looks_like_refusal(translated):
+            return translated
+        logger.warning(
+            "Refusal/meta-response instead of a translation (language=%s, attempt=%d/%d); retrying",
+            language, attempt, MAX_TRANSLATION_ATTEMPTS,
+        )
+    raise RuntimeError(
+        f"claude CLI kept returning a refusal after {MAX_TRANSLATION_ATTEMPTS} attempts "
+        f"(language={language}): {translated[:150]!r}"
+    )
 
 
 def upsert_translation(

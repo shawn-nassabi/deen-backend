@@ -27,6 +27,7 @@ from scripts.translate_lessons import (
     DEFAULT_MODEL,
     ENTITY_FIELD_MAP,
     ENTITY_TYPE_CHOICES,
+    MAX_TRANSLATION_ATTEMPTS,
     SUPPORTED_LANGUAGES,
     _resolve_enabled_entity_types,
     parse_args,
@@ -112,7 +113,8 @@ class TestTranslateText:
         assert "Qur'an" in system_prompt or "Qur’an" in system_prompt
         assert "verbatim" in system_prompt.lower() or "EXACTLY" in system_prompt
 
-        assert kwargs["input"] == "source text"
+        # source is delimited so lesson/quiz content is never mistaken for an instruction
+        assert kwargs["input"] == "<<<BEGIN_SOURCE>>>\nsource text\n<<<END_SOURCE>>>"
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         assert kwargs["timeout"] == CLAUDE_TIMEOUT_SECONDS
@@ -134,6 +136,29 @@ class TestTranslateText:
                 assert False, "expected RuntimeError"
             except RuntimeError as exc:
                 assert "empty output" in str(exc)
+
+    def test_retries_on_refusal_then_returns_translation(self):
+        # First invocation returns a refusal/meta-response; retry returns a real translation.
+        results = [
+            SimpleNamespace(returncode=0, stdout="Maaf, saya tidak dapat memproses permintaan ini.", stderr=""),
+            SimpleNamespace(returncode=0, stdout="  terjemahan sebenar  ", stderr=""),
+        ]
+        with patch("scripts.translate_lessons.subprocess.run", side_effect=results) as mocked_run:
+            out = translate_text(model="sonnet", text="text", language="bahasa melayu")
+        assert out == "terjemahan sebenar"
+        assert mocked_run.call_count == 2
+
+    def test_raises_when_refusal_persists(self):
+        refusal = SimpleNamespace(
+            returncode=0, stdout="I apologize, but the text was not provided to me.", stderr=""
+        )
+        with patch("scripts.translate_lessons.subprocess.run", return_value=refusal) as mocked_run:
+            try:
+                translate_text(model="sonnet", text="text", language="german")
+                assert False, "expected RuntimeError"
+            except RuntimeError as exc:
+                assert "kept returning a refusal" in str(exc)
+        assert mocked_run.call_count == MAX_TRANSLATION_ATTEMPTS
 
 
 # ================================================================
