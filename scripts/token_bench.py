@@ -140,7 +140,7 @@ async def _drive_turn(client, url: str, query: str, session_id: str, language: s
             errors.append(str(data.get("message", "")))
 
     answer = "".join(answer_parts)
-    return {
+    record = {
         "query": query if len(query) <= 200 else query[:200] + "…",
         "elapsed_s": round(elapsed, 2),
         "event_types": [t for t, _ in events],
@@ -153,6 +153,11 @@ async def _drive_turn(client, url: str, query: str, session_id: str, language: s
         "references": refs,
         "errors": errors,
     }
+    if len(answer) > ANSWER_SNAPSHOT_CAP:
+        # Keep the tail too — end-of-answer contracts (follow-up questions,
+        # disclaimers) live there and must stay auditable.
+        record["answer_tail"] = answer[-1200:]
+    return record
 
 
 # ---------------------------------------------------------------------------
