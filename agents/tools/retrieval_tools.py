@@ -15,41 +15,31 @@ from core.context import correlation_id as correlation_id_ctx
 logger = logging.getLogger(__name__)
 
 
+def _clamp(value, lo: int, hi: int) -> int:
+    """Bound an LLM-supplied doc count to [lo, hi] (token-cost Phase 1)."""
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return lo
+
+
 @tool
 async def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Dict[str, any]:
     """
-    Retrieve relevant documents from the Shia Islamic knowledge base.
-
-    Use this tool to find hadith, narrations, and texts specifically from Shia sources.
-    The retrieval uses hybrid search (dense + sparse) with reranking for best results.
+    Retrieve hadith and narrations from the Shia Islamic knowledge base
+    (hybrid dense+sparse search with reranking).
 
     Args:
-        query: The search query (should be enhanced if possible)
-        num_documents: Number of documents to retrieve (default: 5, recommended: 3-10)
-
-    Returns:
-        Dictionary with:
-        - documents (List[Dict]): Retrieved documents with metadata
-        - count (int): Number of documents retrieved
-        - source (str): "shia"
-
-    Each document contains:
-        - hadith_id: Unique identifier
-        - metadata: Book, chapter, hadith number, author, volume, source
-        - page_content_en: English text
-        - page_content_ar: Arabic text (if available)
+        query: Search query, phrased for Shia hadith sources.
+        num_documents: How many documents to return (1-10; default 5).
 
     When to use:
-    - For questions specifically about Shia beliefs, practices, or sources
-    - When the user asks about Twelver Shia Islam
-    - As the primary source for most queries (Shia is the default perspective)
-
-    Recommended num_documents:
-    - 3-5: For specific, focused queries
-    - 5-7: For broader topics requiring more context
-    - 7-10: For complex questions needing comprehensive coverage
+    - The primary retrieval tool — Shia sources are the default perspective.
+    - Theology, practice, history, and hadith questions from the Twelver
+      Shia viewpoint.
     """
     try:
+        num_documents = _clamp(num_documents, 1, 10)
         docs = await retriever.aretrieve_shia_documents(query, num_documents)
 
         return {
@@ -75,43 +65,22 @@ async def retrieve_shia_documents_tool(query: str, num_documents: int = 5) -> Di
 @tool
 async def retrieve_sunni_documents_tool(query: str, num_documents: int = 2) -> Dict[str, any]:
     """
-    Retrieve relevant documents from the Sunni Islamic knowledge base.
-
-    Use this tool to find hadith, narrations, and texts from Sunni sources.
-    Useful for comparative analysis or providing multiple perspectives.
+    Retrieve hadith and narrations from the Sunni Islamic knowledge base.
 
     Args:
-        query: The search query (should be enhanced if possible)
-        num_documents: Number of documents to retrieve (default: 2, recommended: 1-5)
-
-    Returns:
-        Dictionary with:
-        - documents (List[Dict]): Retrieved documents with metadata
-        - count (int): Number of documents retrieved
-        - source (str): "sunni"
-
-    Each document contains:
-        - hadith_id: Unique identifier
-        - metadata: Book, chapter, hadith number, author, volume, source
-        - page_content_en: English text
-        - page_content_ar: Arabic text (if available)
+        query: Search query, phrased for Sunni hadith sources.
+        num_documents: How many documents to return (0-5; default 2).
 
     When to use:
-    - For comparative perspectives on shared topics
-    - When user explicitly asks about Sunni viewpoints
-    - For hadith that appear in both traditions
-    - To provide a more comprehensive view on certain topics
+    - Cross-tradition corroboration or comparison on shared topics.
+    - When the user explicitly asks for the Sunni perspective.
 
     When NOT to use:
-    - For purely Shia-specific topics (Imamate, specific Shia practices)
-    - When user specifically requests only Shia sources
-
-    Recommended num_documents:
-    - 1-2: For supplementary context (default)
-    - 2-4: For comparative analysis
-    - 4-5: When user specifically asks for Sunni perspective
+    - Purely Shia-specific topics (e.g. Imamate) or when the user asks for
+      Shia sources only. Do not call this by default on every question.
     """
     try:
+        num_documents = _clamp(num_documents, 0, 5)
         docs = await retriever.aretrieve_sunni_documents(query, num_documents)
 
         return {
@@ -201,43 +170,23 @@ async def retrieve_combined_documents_tool(
 @tool
 async def retrieve_quran_tafsir_tool(query: str, num_documents: int = 3) -> Dict[str, any]:
     """
-    Retrieve Quran verses and Tafsir (exegesis/explanation) from the Quran knowledge base.
-
-    Use this tool to find Quranic content and scholarly Tafsir commentary.
-    The retrieval searches a dedicated Quran and Tafsir vector database.
+    Retrieve Quran verses with Tafsir (scholarly exegesis) from the
+    dedicated Quran/Tafsir knowledge base.
 
     Args:
-        query: The search query (should be enhanced if possible)
-        num_documents: Number of documents to retrieve (default: 3, recommended: 2-5)
-
-    Returns:
-        Dictionary with:
-        - documents (List[Dict]): Retrieved documents with metadata
-        - count (int): Number of documents retrieved
-        - source (str): "quran_tafsir"
-
-    Each document contains:
-        - chunk_id: Unique identifier
-        - metadata: Surah name, chapter number, verses covered, author, collection, volume
-        - page_content_en: Tafsir text (English)
-        - quran_translation: English translation of the Quran verses
+        query: Search query, phrased for Quranic content.
+        num_documents: How many documents to return (0-5; default 3).
 
     When to use:
-    - When the query asks about Quranic verses, Surahs, or their meanings
-    - When Tafsir (exegesis/commentary) on specific Quran passages is needed
-    - When Quranic evidence would strengthen or complement a response
-    - For questions about Quranic themes, stories, or teachings
-    - Can be used ALONGSIDE hadith retrieval tools for comprehensive answers
+    - Questions about Quranic verses, Surahs, themes, stories, or meanings.
+    - When Quranic evidence would strengthen a hadith-based answer (use
+      alongside the hadith retrieval tools).
 
     When NOT to use:
-    - For purely hadith-related questions with no Quranic dimension
-    - When the user only asks about historical events unrelated to the Quran
-
-    Recommended num_documents:
-    - 2-3: For specific verse or Surah queries
-    - 3-5: For broader Quranic themes or comparative topics
+    - Purely hadith or history questions with no Quranic dimension.
     """
     try:
+        num_documents = _clamp(num_documents, 0, 5)
         docs = await retriever.aretrieve_quran_documents(query, num_documents)
 
         return {

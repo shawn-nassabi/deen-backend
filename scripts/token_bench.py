@@ -179,6 +179,12 @@ def _check_entry(entry: Dict[str, Any], turns: List[Dict[str, Any]]) -> Dict[str
         routing_ok = observed == expect
 
     checks: Dict[str, Any] = {"observed_route": observed, "routing_ok": routing_ok}
+    # Hard health checks for every entry: an SSE `error` event or an empty
+    # answer is always a failure (lesson from the phase-1 smoke, where a
+    # state-merge bug produced "No response generated." errors that the
+    # routing check alone did not surface).
+    checks["no_errors"] = not any(t["errors"] for t in turns)
+    checks["has_answer"] = last["answer_chars"] > 0
     if expect == "fiqh":
         checks["has_fiqh_disclaimer"] = "Ayatollah Sistani's published rulings" in last["answer"]
         checks["has_sources_or_refs"] = (
@@ -193,6 +199,7 @@ def _check_entry(entry: Dict[str, Any], turns: List[Dict[str, Any]]) -> Dict[str
         checks["no_retrieval"] = not any(
             s in RETRIEVAL_STEPS for t in turns for s in t["status_steps"]
         )
+    checks["all_ok"] = all(v for k, v in checks.items() if isinstance(v, bool))
     return checks
 
 
@@ -314,6 +321,11 @@ async def run_bench(args) -> Dict[str, Any]:
 
     overall = _aggregate(results)
     routing_failures = [r["id"] for r in results if not r["routing_ok"]]
+    check_failures = {
+        r["id"]: [k for k, v in r.items() if isinstance(v, bool) and not v and k != "all_ok"]
+        for r in results
+        if not r.get("all_ok", True)
+    }
 
     return {
         "label": args.label,
@@ -324,6 +336,7 @@ async def run_bench(args) -> Dict[str, Any]:
         "overall": overall,
         "slices": slices,
         "routing_failures": routing_failures,
+        "check_failures": check_failures,
         "entries": results,
     }
 
@@ -351,8 +364,12 @@ def _print_report(payload: Dict[str, Any]) -> None:
     )
     if payload["routing_failures"]:
         print(f"\nROUTING CHECK FAILURES: {payload['routing_failures']}")
-    else:
-        print("\nAll routing checks passed.")
+    if payload["check_failures"]:
+        print("\nCHECK FAILURES (per entry):")
+        for entry_id, failed in payload["check_failures"].items():
+            print(f"  {entry_id}: {failed}")
+    if not payload["routing_failures"] and not payload["check_failures"]:
+        print("\nAll checks passed.")
 
 
 def _emit_snapshot(snapshot_path: Path, payload: Dict[str, Any]) -> None:
@@ -524,8 +541,10 @@ def run_judge(args) -> int:
     for role in ("baseline", "candidate"):
         means = {axis: round(total / n, 2) for axis, total in axis_sums[role].items()} if n else {}
         print(f"{role} mean scores: {means}")
-    print("\nGate guidance: candidate must not lose on groundedness or "
-          "citation_completeness means, and win+tie must be >= 80% of pairs.")
+    print("\nGate guidance (no-regression parity test): candidate mean must not be "
+          "lower than baseline on groundedness or citation_completeness, and the "
+          "candidate's share of decided (non-tie) pairs must be >= 40% — a ~50/50 "
+          "split means parity, which passes.")
     return 0
 
 

@@ -89,7 +89,6 @@ NODE_STATUS_MESSAGES = {
 
 # Human-readable status messages for each tool call
 TOOL_STATUS_MESSAGES = {
-    "check_if_non_islamic_tool": "Checking if query is within scope...",
     "translate_to_english_tool": "Translating your question...",
     "enhance_query_tool": "Enhancing your question...",
     "retrieve_shia_documents_tool": "Searching Shia sources...",
@@ -265,7 +264,28 @@ async def chat_pipeline_streaming_agentic(
                 ):
                     for node_name, node_state in event.items():
                         logger.debug("Node traversal", extra={"correlation_id": correlation_id_ctx.get(), "node": node_name})
-                        state_box["final_state"] = node_state
+                        # Merge node deltas instead of overwriting. astream
+                        # (updates mode) yields {node: delta}; nodes that
+                        # return partial dicts (fiqh_classification,
+                        # fiqh_subgraph, generate_fiqh_response) would
+                        # otherwise clobber earlier keys — which made the
+                        # fiqh streaming branch below unreachable in
+                        # production (final_state lost `fiqh_category`, so
+                        # fiqh answers fell into the final_response
+                        # short-circuit: no token streaming, no
+                        # fiqh_references event). Verified live in the
+                        # phase-0 bench (token-cost DEE-60).
+                        if isinstance(node_state, dict):
+                            if isinstance(state_box["final_state"], dict):
+                                state_box["final_state"].update(node_state)
+                            else:
+                                state_box["final_state"] = dict(node_state)
+                        elif node_state is not None:
+                            state_box["final_state"] = node_state
+                        # node_state is None when a node returns an empty
+                        # update (e.g. the streaming-guarded
+                        # generate_fiqh_response) — never let it clobber
+                        # the accumulated state.
 
                         # Node-arrival status. Skip 'fiqh_subgraph' here: the
                         # keep-alive message is now pushed via the contextvar

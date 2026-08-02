@@ -12,8 +12,10 @@ def make_cached_system_message(text: str) -> SystemMessage:
     through LangChain's Anthropic integration.
 
     The cache_control breakpoint tells Anthropic to cache everything up to and including
-    this message as a single prefix (tools + system prompt). Requires combined token
-    count >= 2048 for claude-sonnet-4-6.
+    this message as a single prefix (tools + system prompt). Minimum cacheable prefix
+    for claude-sonnet-4-6 is 1024 tokens per current Anthropic docs (the old 2048 note
+    here was stale) — treat runtime `cache_creation_input_tokens > 0` as ground truth.
+    Prefixes below the minimum silently don't cache.
     """
     return SystemMessage(content=[
         {

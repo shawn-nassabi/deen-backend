@@ -23,7 +23,6 @@ from agents.prompts.agent_prompts import (
 )
 from agents.state.chat_state import ChatState
 from agents.tools import (
-    check_if_non_islamic_tool,
     enhance_query_tool,
     retrieve_quran_tafsir_tool,
     retrieve_shia_documents_tool,
@@ -50,6 +49,19 @@ async def _retry_ainvoke(llm, messages):
     return await llm.ainvoke(messages)
 
 
+def _clamp_doc_count(value, lo: int, hi: int) -> int:
+    """Bound an agent-supplied num_documents to [lo, hi] (token-cost Phase 1).
+
+    The tool signatures accept bare ints and the LLM controls the value, so
+    without this an over-eager plan could request arbitrarily many documents.
+    Falls back to `lo` on non-numeric input.
+    """
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return lo
+
+
 class ChatAgent:
     """
     LangGraph-based agentic chat system for Islamic education.
@@ -57,8 +69,13 @@ class ChatAgent:
 
     def __init__(self, config: AgentConfig = None):
         self.config = config or DEFAULT_AGENT_CONFIG
+        # check_if_non_islamic_tool is deliberately NOT bound (token-cost
+        # Phase 1, DEE-60): intent classification already runs
+        # deterministically on every request in _fiqh_classification_node,
+        # so the agent-side tool was pure duplication — its schema cost
+        # ~1.3k chars on every agent call and each use re-ran the intent
+        # classifier a second time.
         self.tools = [
-            check_if_non_islamic_tool,
             translate_to_english_tool,
             enhance_query_tool,
             retrieve_shia_documents_tool,
@@ -82,7 +99,6 @@ class ChatAgent:
         # Build a bind_tools list with the last tool replaced by the cached Anthropic dict.
         # self.tools keeps callable objects for ToolNode; this list is only for bind_tools.
         bind_tools_list = [
-            check_if_non_islamic_tool,
             translate_to_english_tool,
             enhance_query_tool,
             retrieve_shia_documents_tool,
@@ -463,11 +479,20 @@ class ChatAgent:
 
     async def _generate_fiqh_response_node(self, state: ChatState) -> dict:
         """
-        Non-streaming generation node for the fiqh path.
-        Uses fiqh-specific system prompt and formats filtered docs as numbered evidence.
-        The streaming path in pipeline_langgraph.py bypasses this node and streams
-        tokens directly — this node serves the non-streaming (invoke) path only.
+        Non-streaming generation node for the fiqh path — serves the
+        `ainvoke` (/chat/agentic) path only.
+
+        On the SSE path (`streaming_mode=True`) this node is a no-op:
+        core/pipeline_langgraph.py streams the fiqh generation itself from
+        the merged final state (fiqh_category + fiqh_filtered_docs). Before
+        the token-cost Phase 1 fix (DEE-60), this guard was missing AND the
+        pipeline kept only the last node delta, so this node's non-streamed
+        answer was what users received (as a single blob, with no
+        fiqh_references event ever emitted).
         """
+        if state.get("streaming_mode"):
+            logger.debug("Skipping fiqh generation node (streaming mode)", extra={"correlation_id": correlation_id_ctx.get()})
+            return {}
         logger.debug("Generating fiqh answer (non-streaming)", extra={"correlation_id": correlation_id_ctx.get()})
         from modules.fiqh.generator import (
             _build_messages,
@@ -604,10 +629,7 @@ class ChatAgent:
 
             tool_name = tool_call.get("name")
             args = tool_call.setdefault("args", {})
-            if tool_name == "check_if_non_islamic_tool":
-                args.setdefault("query", state["working_query"])
-                args.setdefault("session_id", state["runtime_session_id"])
-            elif tool_name == "translate_to_english_tool":
+            if tool_name == "translate_to_english_tool":
                 args.setdefault("text", state["working_query"])
             elif tool_name == "enhance_query_tool":
                 args.setdefault("query", state["working_query"])
@@ -615,12 +637,15 @@ class ChatAgent:
             elif tool_name == "retrieve_shia_documents_tool":
                 args.setdefault("query", state["working_query"])
                 args.setdefault("num_documents", retrieval_config.get("shia_doc_count", self.config.retrieval.shia_doc_count))
+                args["num_documents"] = _clamp_doc_count(args.get("num_documents"), 1, 10)
             elif tool_name == "retrieve_sunni_documents_tool":
                 args.setdefault("query", state["working_query"])
                 args.setdefault("num_documents", retrieval_config.get("sunni_doc_count", self.config.retrieval.sunni_doc_count))
+                args["num_documents"] = _clamp_doc_count(args.get("num_documents"), 0, 5)
             elif tool_name == "retrieve_quran_tafsir_tool":
                 args.setdefault("query", state["working_query"])
                 args.setdefault("num_documents", retrieval_config.get("quran_doc_count", self.config.retrieval.quran_doc_count))
+                args["num_documents"] = _clamp_doc_count(args.get("num_documents"), 0, 5)
 
     def _record_retrieval_result(self, state: ChatState, result_data: Dict[str, Any], tool_name: str) -> None:
         source = result_data.get("source") or tool_name.replace("retrieve_", "").replace("_tool", "")
