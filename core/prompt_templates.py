@@ -1,3 +1,5 @@
+import os
+
 from langchain.prompts import ChatPromptTemplate  # Only for excluded enhancer templates
 from langchain_core.messages import SystemMessage, HumanMessage
 from core.chat_models import make_cached_system_message
@@ -55,6 +57,72 @@ Use references only when relevant; treat them as your own knowledge, not as 'ref
 
 generatorUserTemplate = "User Query: {query}"
 
+
+# --- Token-cost DEE-60 Phase 3: cache-aware generation prompt --------------
+#
+# generatorSystemTemplate interpolates {target_language} and {references}
+# INSIDE the system string, so the system block differs every request and can
+# never be a shared cache prefix. The cache-aware layout (AGENT_CACHE_V2,
+# default on; =0 restores the legacy shape) keeps the system block STATIC
+# (byte-identical across all requests/turns) and moves everything dynamic
+# into the final human message:
+#
+#   [ System(static, cache_control) ]      <- shared, but alone it's below
+#   [ ...chat_history, last msg marked ]   <- the Sonnet cache minimum; the
+#   [ Human(language + references + query)]   breakpoint on the last history
+#                                             message makes turn N+1 read
+#                                             turn N's static+history prefix
+#                                             at 0.1x in multi-turn sessions.
+# Static = the full template minus the two dynamic paragraphs (exact-substring
+# surgery on our own literals; guarded by tests asserting no "{...}"
+# placeholders survive and the objectives/examples are retained).
+_GENERATOR_STATIC = (
+    generatorSystemTemplate
+    .replace(
+        "IMPORTANT: You must generate your response in this target language: "
+        "{target_language}. If references are provided in another language "
+        "(e.g. English), translate them effectively into the target language "
+        "when using them.\n\n",
+        "",
+    )
+    .replace(
+        "\n\nHere is the retrieved data/context you should use as evidence in "
+        "your response (make any quoted reference bold and italic): {references}"
+        "\n\nUse references only when relevant; treat them as your own "
+        "knowledge, not as 'references you have provided'.\n",
+        "\n",
+    )
+    .rstrip()
+    + "\n\nThe target language, the retrieved references, and the user's query follow in the conversation."
+)
+
+_GENERATOR_DYNAMIC_TEMPLATE = """IMPORTANT: You must generate your response in this target language: {target_language}. If references are provided in another language (e.g. English), translate them effectively into the target language when using them.
+
+Here is the retrieved data/context you should use as evidence in your response (make any quoted reference bold and italic): {references}
+
+Use references only when relevant; treat them as your own knowledge, not as 'references you have provided'.
+
+User Query: {query}"""
+
+
+def _cache_v2_enabled() -> bool:
+    return os.getenv("AGENT_CACHE_V2", "1") != "0"
+
+
+def _with_history_cache_marker(message):
+    """Return a COPY of a history message whose content carries a cache_control
+    breakpoint (block form). Never mutates the original — history objects are
+    shared with agent state and Redis wrappers."""
+    content = getattr(message, "content", "")
+    if not isinstance(content, str):
+        return message  # already structured; leave untouched
+    marked = message.model_copy()
+    marked.content = [
+        {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+    ]
+    return marked
+
+
 def generator_messages(
     query: str,
     references: str,
@@ -63,13 +131,35 @@ def generator_messages(
 ) -> list:
     if chat_history is None:
         chat_history = []
+
+    if not _cache_v2_enabled():
+        # Legacy shape: everything interpolated into the system message.
+        return [
+            SystemMessage(content=generatorSystemTemplate.format(
+                target_language=target_language,
+                references=references,
+            )),
+            *chat_history,
+            HumanMessage(content=generatorUserTemplate.format(query=query)),
+        ]
+
+    history = list(chat_history)
+    if history:
+        history[-1] = _with_history_cache_marker(history[-1])
     return [
-        SystemMessage(content=generatorSystemTemplate.format(
+        SystemMessage(content=[
+            {
+                "type": "text",
+                "text": _GENERATOR_STATIC,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]),
+        *history,
+        HumanMessage(content=_GENERATOR_DYNAMIC_TEMPLATE.format(
             target_language=target_language,
             references=references,
+            query=query,
         )),
-        *chat_history,
-        HumanMessage(content=generatorUserTemplate.format(query=query)),
     ]
 
 

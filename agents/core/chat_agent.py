@@ -212,25 +212,51 @@ class ChatAgent:
             state["errors"].append(f"Max iterations ({self.config.max_iterations}) reached")
             return state
 
-        messages = list(state["messages"])
+        def _filter_spurious(msgs):
+            # D-08: filter spurious empty AIMessages emitted by Claude in tool-calling
+            # sequences. AIMessage(content="", tool_calls=[...]) is valid (Claude
+            # tool-call request) — preserved. Empty content with no tool_calls is
+            # spurious — filtered out.
+            return [
+                msg for msg in msgs
+                if not (
+                    isinstance(msg, AIMessage)
+                    and msg.content == ""
+                    and not getattr(msg, "tool_calls", None)
+                )
+            ]
 
-        # D-08: filter spurious empty AIMessages emitted by Claude in tool-calling sequences.
-        # AIMessage(content="", tool_calls=[...]) is valid (Claude tool-call request) — preserved.
-        # AIMessage(content="", tool_calls=None/[]) with no tool_calls is spurious — filtered out.
-        messages = [
-            msg for msg in messages
-            if not (
-                isinstance(msg, AIMessage)
-                and msg.content == ""
-                and not getattr(msg, "tool_calls", None)
+        if os.getenv("AGENT_CACHE_V2", "1") != "0":
+            # Token-cost DEE-60 Phase 3: append-only prompt construction.
+            # The human turn (initial message on iteration 1, iteration
+            # summary afterwards) is PERSISTED into state so iteration N+1's
+            # rendered request is an exact byte-prefix extension of iteration
+            # N's; the system prompt is sent on EVERY iteration
+            # (byte-identical — previously iteration >= 2 sent no system at
+            # all, forfeiting the tools+system cache prefix). A rolling
+            # cache_control breakpoint rides the newest human message; older
+            # markers are swept to respect Anthropic's 4-breakpoint budget
+            # (tools + system + newest message = 3 used).
+            self._sweep_cache_markers(state["messages"])
+            human_text = (
+                self._build_initial_user_message(state)
+                if state["iterations"] == 1
+                else self._build_iteration_summary(state)
             )
-        ]
-
-        if state["iterations"] == 1:
+            state["messages"].append(HumanMessage(content=[
+                {"type": "text", "text": human_text, "cache_control": {"type": "ephemeral"}}
+            ]))
+            messages = _filter_spurious(list(state["messages"]))
             messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
-            messages.append(HumanMessage(content=self._build_initial_user_message(state)))
         else:
-            messages.append(HumanMessage(content=self._build_iteration_summary(state)))
+            # Legacy (AGENT_CACHE_V2=0): human turns stay local to this call;
+            # system prompt only on iteration 1.
+            messages = _filter_spurious(list(state["messages"]))
+            if state["iterations"] == 1:
+                messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
+                messages.append(HumanMessage(content=self._build_initial_user_message(state)))
+            else:
+                messages.append(HumanMessage(content=self._build_iteration_summary(state)))
 
         try:
             response = await _retry_ainvoke(self.llm, messages)
@@ -328,6 +354,20 @@ class ChatAgent:
         if result_messages:
             state["messages"].extend(result_messages)
         return state
+
+    @staticmethod
+    def _sweep_cache_markers(messages) -> None:
+        """Strip cache_control from previously persisted message blocks so at
+        most one messages-tier breakpoint (the newest human message) exists
+        per request (token-cost DEE-60 Phase 3). Only touches block-form
+        content we created; plain-string history and ToolMessages pass by."""
+        for msg in messages:
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
 
     @staticmethod
     def _compact_tool_message(message, result_data: Dict[str, Any]) -> None:
