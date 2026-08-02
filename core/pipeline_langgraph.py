@@ -548,9 +548,12 @@ async def chat_pipeline_streaming_agentic(
                         references = utils.compact_format_references(all_docs)
                         chat_model = chat_models.get_generator_model()
                         from core.history_budget import GENERATION_BUDGET, budget_messages
-                        history_messages = budget_messages(
-                            await amake_history(runtime_session_id).aget_messages(),
-                            *GENERATION_BUDGET,
+                        from services.summary_service import prepend_summary_if_truncated
+                        full_history = await amake_history(runtime_session_id).aget_messages()
+                        history_messages = await prepend_summary_if_truncated(
+                            runtime_session_id,
+                            full_history,
+                            budget_messages(full_history, *GENERATION_BUDGET),
                         )
                         messages = prompt_templates.generator_messages(
                             query=user_query,

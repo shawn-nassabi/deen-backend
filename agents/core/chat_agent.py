@@ -850,10 +850,14 @@ class ChatAgent:
         try:
             from core.history_budget import AGENT_BUDGET, budget_messages
             from core.memory import amake_history
+            from services.summary_service import prepend_summary_if_truncated
 
             history = amake_history(session_id)
             messages = await history.aget_messages()
-            return budget_messages(messages, *AGENT_BUDGET)
+            budgeted = budget_messages(messages, *AGENT_BUDGET)
+            # Phase 5 (DEE-60): long chats get a compact summary of the turns
+            # the budget dropped, so follow-ups keep distant context.
+            return await prepend_summary_if_truncated(session_id, messages, budgeted)
         except Exception as exc:
             logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return []
