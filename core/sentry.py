@@ -106,6 +106,9 @@ def record_cache_metrics_breadcrumb(
     cache_read_tokens: int,
     cache_creation_tokens: int,
     iterations: int,
+    input_tokens_total: int | None = None,
+    output_tokens_total: int | None = None,
+    usage_by_site: dict | None = None,
 ) -> None:
     """Emit a per-turn cache-efficiency breadcrumb on the current Sentry scope.
 
@@ -123,17 +126,34 @@ def record_cache_metrics_breadcrumb(
         cache_read_tokens: sum across all _agent_node iterations this turn
         cache_creation_tokens: sum across all _agent_node iterations this turn
         iterations: number of _agent_node calls this turn
+        input_tokens_total: per-turn raw (uncached) input tokens across all
+            instrumented call sites (token-cost Phase 0); omitted when the
+            request accumulator recorded nothing (e.g. stub-driven tests)
+        output_tokens_total: per-turn output tokens across all sites; same
+            omission rule as input_tokens_total
+        usage_by_site: per-site usage map from core.token_telemetry; same
+            omission rule
     """
     if not SENTRY_ENABLED:
         return
+    data = {
+        "cache_efficiency_ratio": cache_efficiency_ratio,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "iterations": iterations,
+    }
+    # Additive token-usage fields (token-cost Phase 0): only attached when the
+    # accumulator saw real usage, so the D-08 four-key shape is preserved for
+    # stub-driven runs (tests/test_cache_metrics_breadcrumb.py).
+    if input_tokens_total is not None:
+        data["input_tokens_total"] = input_tokens_total
+    if output_tokens_total is not None:
+        data["output_tokens_total"] = output_tokens_total
+    if usage_by_site is not None:
+        data["usage_by_site"] = usage_by_site
     sentry_sdk.add_breadcrumb(
         category="cache_metrics",
         level="info",
         message="cache_efficiency",
-        data={
-            "cache_efficiency_ratio": cache_efficiency_ratio,
-            "cache_read_tokens": cache_read_tokens,
-            "cache_creation_tokens": cache_creation_tokens,
-            "iterations": iterations,
-        },
+        data=data,
     )

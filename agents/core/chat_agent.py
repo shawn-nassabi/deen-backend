@@ -37,6 +37,7 @@ from core.config import ANTHROPIC_API_KEY
 import logging
 from core.context import correlation_id as correlation_id_ctx
 from core.chat_models import make_cached_system_message
+from core.token_telemetry import record_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,7 @@ class ChatAgent:
             _usage = (response.response_metadata or {}).get("usage", {})
             _cache_creation = _usage.get("cache_creation_input_tokens", 0) or 0
             _cache_read = _usage.get("cache_read_input_tokens", 0) or 0
+            record_llm_usage("agent", response)
             logger.debug(
                 "Agent LLM cache metrics",
                 extra={
@@ -320,6 +322,7 @@ class ChatAgent:
 
             llm = get_generator_model()
             response = await _retry_ainvoke(llm, generation_messages)
+            record_llm_usage("generation_nonstream", response)
             state["final_response"] = response.content
             state["response_generated"] = True
             logger.debug("Response generated", extra={"correlation_id": correlation_id_ctx.get(), "response_chars": len(response.content)})
@@ -347,6 +350,7 @@ class ChatAgent:
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                record_llm_usage("early_exit_casual", response)
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM casual reply error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -367,6 +371,7 @@ class ChatAgent:
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                record_llm_usage("early_exit_non_islamic", response)
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM non-Islamic rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -389,6 +394,7 @@ class ChatAgent:
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                record_llm_usage("early_exit_unethical", response)
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -490,6 +496,7 @@ class ChatAgent:
                 query=state["user_query"],
                 evidence=_format_evidence(docs),
             ))
+            record_llm_usage("fiqh_generation_nonstream", response)
             answer = response.content.strip()
             answer += _build_references_section(answer, docs)
             if not is_sufficient:

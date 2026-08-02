@@ -61,6 +61,9 @@ async def aenhance_query(query: str, session_id: Optional[str] = None) -> str:
             history_messages = []
 
     response = await _aenhance_query_call(query, history_messages)
+    from core.token_telemetry import record_llm_usage
+
+    record_llm_usage("enhancer", response)
     return response.content.strip()
 
 

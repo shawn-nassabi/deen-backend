@@ -108,6 +108,9 @@ async def afilter_evidence(query: str, docs: list[dict]) -> list[dict]:
         return []
     try:
         response = await _afilter_evidence_call(query, docs)
+        from core.token_telemetry import record_llm_usage
+
+        record_llm_usage("fiqh_filter", response)
         return _resolve_filter_response(response.content.strip(), docs)
     except Exception:
         logger.error(
