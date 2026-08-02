@@ -55,7 +55,11 @@ async def aenhance_query(query: str, session_id: Optional[str] = None) -> str:
     history_messages = []
     if session_id:
         try:
-            history_messages = await amake_history(session_id).aget_messages()
+            from core.history_budget import ENHANCER_BUDGET, budget_messages
+
+            history_messages = budget_messages(
+                await amake_history(session_id).aget_messages(), *ENHANCER_BUDGET
+            )
         except Exception:
             logger.error("[aenhance_query] failed loading history", exc_info=True)
             history_messages = []

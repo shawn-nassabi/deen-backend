@@ -7,6 +7,7 @@ Shia hadith, Sunni hadith, and Quran/Tafsir evidence per query.
 
 import asyncio
 import json
+import os
 from typing import Any, Dict, List, Literal
 
 from langchain_anthropic import ChatAnthropic
@@ -317,10 +318,53 @@ class ChatAgent:
                 "retrieve_quran_tafsir_tool",
             }:
                 self._record_retrieval_result(state, result_data, tool_name)
+                # Token-cost DEE-60 Phase 2: full docs are now in state
+                # (retrieved_docs / quran_docs — the generation step's only
+                # source); rewrite the ToolMessage the PLANNER sees to a
+                # compact view before it enters state["messages"] and gets
+                # re-sent on every subsequent agent iteration.
+                self._compact_tool_message(message, result_data)
 
         if result_messages:
             state["messages"].extend(result_messages)
         return state
+
+    @staticmethod
+    def _compact_tool_message(message, result_data: Dict[str, Any]) -> None:
+        """Replace a retrieval ToolMessage's content with a compact planner
+        view: source, count, query, and per-doc id/title/snippet.
+
+        The planner only needs coverage + enough signal to judge evidence
+        sufficiency; the full texts (plus Arabic) were costing thousands of
+        re-sent tokens per iteration while generation never reads messages.
+        `ensure_ascii=False` avoids 6x \\uXXXX inflation on Arabic snippets.
+        Kill-switch: TOOLMSG_COMPACT=0 restores the raw payload.
+        """
+        if os.getenv("TOOLMSG_COMPACT", "1") == "0":
+            return
+        docs = result_data.get("documents", []) or []
+        compact_docs = []
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            md = doc.get("metadata", {}) or {}
+            compact_docs.append({
+                "id": doc.get("hadith_id") or doc.get("chunk_id"),
+                "title": md.get("book_title") or md.get("surah_name"),
+                "chapter": md.get("chapter_title") or md.get("verses_covered"),
+                "number": md.get("hadith_no"),
+                "sect": md.get("sect"),
+                "snippet": (doc.get("page_content_en") or "")[:300],
+            })
+        payload = {
+            "source": result_data.get("source"),
+            "count": result_data.get("count", len(docs)),
+            "query_used": result_data.get("query_used"),
+            "documents": compact_docs,
+        }
+        if result_data.get("error"):
+            payload["error"] = result_data["error"]
+        message.content = json.dumps(payload, ensure_ascii=False)
 
     async def _generate_response_node(self, state: ChatState) -> ChatState:
         logger.debug("Generating final response", extra={"correlation_id": correlation_id_ctx.get()})
@@ -755,12 +799,18 @@ class ChatAgent:
     @staticmethod
     async def _aload_runtime_messages(session_id: str):
         """Async-native runtime history load (DEE-43). Uses
-        `core.memory.amake_history` so Redis I/O doesn't block the event loop."""
+        `core.memory.amake_history` so Redis I/O doesn't block the event loop.
+
+        Token-cost DEE-60 Phase 2: the loaded window is budgeted (read-side
+        only — Redis still stores the full history) because these messages
+        seed state["messages"] and are re-sent on every agent iteration."""
         try:
+            from core.history_budget import AGENT_BUDGET, budget_messages
             from core.memory import amake_history
 
             history = amake_history(session_id)
-            return await history.aget_messages()
+            messages = await history.aget_messages()
+            return budget_messages(messages, *AGENT_BUDGET)
         except Exception as exc:
             logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return []
