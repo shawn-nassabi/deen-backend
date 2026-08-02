@@ -113,9 +113,14 @@ def _build_async_retry(
     return decorator
 
 
+# Token-cost DEE-60 Phase 4: 2 outer attempts (was 3). Combined with the SDK's
+# max_retries=2 inside ChatAnthropic (core/chat_models.py), the worst case per
+# logical LLM call under 429/529 is 2 x 3 = 6 billed HTTP attempts — down from
+# the previous 3 x 6 = 18 attempt stack.
 anthropic_retry = _build_async_retry(
     provider="anthropic",
     is_transient=_is_anthropic_transient,
+    attempts=2,
 )
 
 pinecone_retry = _build_async_retry(

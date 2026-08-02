@@ -49,6 +49,9 @@ async def _decompose_node(state: FiqhState) -> dict:
 
     return {
         "prior_queries": prior,
+        # Phase 4 (DEE-60): hand the FULL decomposition to the retrieve node
+        # (previously it used only prior_queries[-1] and re-decomposed it).
+        "pending_queries": list(sub_queries),
         "status_events": list(state["status_events"]) + [new_event],
     }
 
@@ -66,11 +69,16 @@ async def _retrieve_node(state: FiqhState) -> dict:
     if state["iteration"] == 0:
         _push_fiqh_status("fiqh_retrieve", "Retrieving fiqh documents...")
 
-    # Use the last query in prior_queries for this retrieval
+    # Phase 4 (DEE-60): consume the fresh sub-queries from the latest
+    # decompose/refine round so the retriever skips its internal duplicate
+    # decomposition. Falls back to the last prior query when empty.
+    pending = list(state.get("pending_queries") or [])
     current_query = state["prior_queries"][-1] if state["prior_queries"] else state["query"]
 
     try:
-        new_docs = await aretrieve_fiqh_documents(current_query)
+        new_docs = await aretrieve_fiqh_documents(
+            current_query, sub_queries=pending or None
+        )
         if len(new_docs) == 0:
             logger.warning("Fiqh retrieval returned zero documents", extra={
                 "correlation_id": correlation_id_ctx.get(),
@@ -102,6 +110,7 @@ async def _retrieve_node(state: FiqhState) -> dict:
     return {
         "iteration": iteration,
         "accumulated_docs": existing,
+        "pending_queries": [],  # consumed
         "status_events": list(state["status_events"]) + [new_event],
     }
 
@@ -117,7 +126,11 @@ async def _filter_node(state: FiqhState) -> dict:
     if state["iteration"] == 1:
         _push_fiqh_status("fiqh_filter", "Filtering evidence...")
     try:
-        filtered = await afilter_evidence(state["query"], state["accumulated_docs"])
+        # Phase 4 (DEE-60): hard cap on evidence entering the filter LLM call.
+        # Accumulated docs arrive RRF-ranked per retrieval round and deduped;
+        # beyond ~30 the extra tail is noise that inflates filter+SEA input.
+        docs_in = state["accumulated_docs"][:30]
+        filtered = await afilter_evidence(state["query"], docs_in)
         if len(filtered) == 0:
             logger.warning("Fiqh evidence filter removed all documents", extra={
                 "correlation_id": correlation_id_ctx.get(),
@@ -215,6 +228,9 @@ async def _refine_node(state: FiqhState) -> dict:
 
     return {
         "prior_queries": prior,
+        # Phase 4 (DEE-60): all refinement queries go to the next retrieve
+        # round (previously only the last one, re-decomposed).
+        "pending_queries": list(refinements),
         "status_events": list(state["status_events"]) + [new_event],
     }
 

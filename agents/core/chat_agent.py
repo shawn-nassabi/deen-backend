@@ -94,7 +94,9 @@ class ChatAgent:
             api_key=ANTHROPIC_API_KEY,
             temperature=self.config.model.temperature,
             max_tokens=self.config.model.max_tokens,
-            max_retries=5,
+            # Token-cost DEE-60 Phase 4: SDK retries 5 -> 2 (calls are also
+            # wrapped in @anthropic_retry x2 => worst case 6 attempts, not 18).
+            max_retries=2,
             timeout=60,
         )
         # Build a bind_tools list with the last tool replaced by the cached Anthropic dict.
@@ -535,6 +537,7 @@ class ChatAgent:
                 "iteration": 0,
                 "accumulated_docs": [],
                 "prior_queries": [],
+                "pending_queries": [],
                 "sea_result": None,
                 "verdict": "INSUFFICIENT",
                 "status_events": [],

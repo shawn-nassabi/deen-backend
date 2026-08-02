@@ -213,13 +213,23 @@ async def _aretrieve_for_sub_query(sub_query: str) -> list[dict]:
         return []
 
 
-async def aretrieve_fiqh_documents(query: str) -> list[dict]:
-    """Native async variant of `retrieve_fiqh_documents`. Sub-queries are
-    decomposed once via `adecompose_query`, then per-sub-query retrievals run
-    concurrently via `asyncio.gather` — a 4-sub-query decomposition that
-    previously paid 4× round-trip latency now pays ~1×."""
+async def aretrieve_fiqh_documents(query: str, sub_queries: list[str] | None = None) -> list[dict]:
+    """Native async variant of `retrieve_fiqh_documents`. Per-sub-query
+    retrievals run concurrently via `asyncio.gather`.
+
+    Token-cost DEE-60 Phase 4: callers that already decomposed (the fiqh
+    graph's decompose/refine nodes) pass `sub_queries` so the internal
+    `adecompose_query` LLM call is skipped — previously the graph decomposed,
+    forwarded only `prior_queries[-1]`, and this function re-decomposed it
+    (a duplicate LLM call per iteration that also DISCARDED the graph-level
+    decomposition). Kill-switch FIQH_V2_RETRIEVAL=0 restores the legacy
+    re-decompose behavior; `sub_queries=None` always decomposes here.
+    """
     try:
-        sub_queries = await adecompose_query(query)
+        import os
+
+        if sub_queries is None or os.getenv("FIQH_V2_RETRIEVAL", "1") == "0" or not sub_queries:
+            sub_queries = await adecompose_query(query)
         per_sub_results = await asyncio.gather(
             *[_aretrieve_for_sub_query(sq) for sq in sub_queries]
         )
