@@ -23,7 +23,11 @@ REFERENCE_FETCH_COUNT = int(os.getenv("REFERENCE_FETCH_COUNT", 10))
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "dev:chat")
-TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "12000"))  # default 30d
+# Redis chat-history TTL. Code default 12000s = 3h20m (the old "30d" note was
+# wrong). NOTE for ops (token-cost DEE-60): the dev .env sets 1440s = 24 MINUTES
+# with a comment claiming "24 hours" — whether that short a window is intended
+# is a product decision, not a code one.
+TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "12000"))
 MAX_MESSAGES = int(os.getenv("REDIS_MAX_MESSAGES", "30"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")

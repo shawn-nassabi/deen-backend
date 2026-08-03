@@ -335,9 +335,14 @@ class TestPromptTemplates:
         from core.prompt_templates import generatorSystemTemplate
         assert "Voice" in generatorSystemTemplate or "voice" in generatorSystemTemplate.lower()
 
-    def test_agent_system_prompt_has_voice_section(self):
+    def test_agent_system_prompt_is_planner_only(self):
+        """Token-cost DEE-60 Phase 1: the agent prompt is the retrieval
+        planner and must NOT carry voice/personality guidance — the generator
+        template owns voice (asserted above). The planner prompt states it
+        does not write the user-facing answer."""
         from agents.prompts.agent_prompts import AGENT_SYSTEM_PROMPT
-        assert "Voice" in AGENT_SYSTEM_PROMPT
+        assert "Voice & Personality" not in AGENT_SYSTEM_PROMPT
+        assert "do not write the user-facing answer" in AGENT_SYSTEM_PROMPT.lower()
 
     def test_early_exit_casual_importable(self):
         from agents.prompts.agent_prompts import EARLY_EXIT_CASUAL, EARLY_EXIT_NON_ISLAMIC

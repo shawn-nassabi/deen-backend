@@ -2,6 +2,7 @@ from modules.context import context
 from core import chat_models
 from core import prompt_templates
 from core.resilience import anthropic_retry
+from core.token_telemetry import record_llm_usage
 
 
 def classify_fiqh_query(query: str, session_id: str = None) -> bool:
@@ -78,6 +79,7 @@ async def aclassify_non_islamic_query(query: str, session_id: str = None) -> boo
 
     messages = prompt_templates.nonislamic_classifier_messages(query=query, chatContext=chatContext)
     response = await _aclassify_non_islamic_query_call(messages)
+    record_llm_usage("non_islamic_classifier_tool", response)
     return "true" in response.content.strip().lower()
 
 
@@ -100,6 +102,7 @@ async def aclassify_intent(query: str, session_id: str = None) -> str:
 
     messages = prompt_templates.intent_classifier_messages(query=query, chatContext=chatContext)
     response = await _aclassify_intent_call(messages)
+    record_llm_usage("intent_classifier", response)
     label = response.content.strip().lower()
     if label in ("islamic", "non_islamic", "casual"):
         return label

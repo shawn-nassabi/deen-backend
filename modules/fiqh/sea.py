@@ -102,13 +102,18 @@ def assess_evidence(query: str, docs: list[dict]) -> SEAResult:
 
 @anthropic_retry
 async def _aassess_evidence_call(query: str, docs: list[dict]) -> SEAResult:
+    from core.token_telemetry import UsageCallbackHandler
+
     model = chat_models.get_sea_model()
     structured_model = model.with_structured_output(SEAResult)
+    # with_structured_output returns the parsed object (no response_metadata),
+    # so usage is captured via callback from the underlying generation.
     return await structured_model.ainvoke(
         _build_messages(
             query=query,
             evidence=_format_evidence(docs),
-        )
+        ),
+        config={"callbacks": [UsageCallbackHandler("fiqh_sea")]},
     )
 
 

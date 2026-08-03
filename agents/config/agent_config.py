@@ -3,7 +3,7 @@ Configuration classes for the LangGraph agentic pipeline.
 """
 
 from pydantic import BaseModel, Field
-from core.config import DENSE_RESULT_WEIGHT, SPARSE_RESULT_WEIGHT, LARGE_LLM
+from core.config import LARGE_LLM
 
 
 class RetrievalConfig(BaseModel):
@@ -30,34 +30,18 @@ class RetrievalConfig(BaseModel):
         description="Number of Quran/Tafsir documents to retrieve"
     )
     
-    reranking_enabled: bool = Field(
-        default=True,
-        description="Whether to use reranking for retrieved documents"
-    )
-    
-    dense_weight: float = Field(
-        default=float(DENSE_RESULT_WEIGHT),
-        ge=0.0,
-        le=1.0,
-        description="Weight for dense retrieval results"
-    )
-    
-    sparse_weight: float = Field(
-        default=float(SPARSE_RESULT_WEIGHT),
-        ge=0.0,
-        le=1.0,
-        description="Weight for sparse retrieval results"
-    )
-    
+    # Token-cost DEE-60 Phase 1: reranking_enabled / dense_weight /
+    # sparse_weight were removed — they were never read anywhere (the
+    # reranker reads DENSE_RESULT_WEIGHT / SPARSE_RESULT_WEIGHT from
+    # core.config directly). Clients that still send them are ignored by
+    # pydantic (extra='ignore' default).
+
     class Config:
         json_schema_extra = {
             "example": {
                 "shia_doc_count": 5,
                 "sunni_doc_count": 2,
-                "quran_doc_count": 3,
-                "reranking_enabled": True,
-                "dense_weight": 0.8,
-                "sparse_weight": 0.2
+                "quran_doc_count": 3
             }
         }
 
@@ -107,32 +91,17 @@ class AgentConfig(BaseModel):
     )
     
     max_iterations: int = Field(
-        default=5,
+        default=3,
         ge=1,
-        le=50,
+        le=10,
         description="Maximum number of agent iterations"
     )
     
-    enable_classification: bool = Field(
-        default=True,
-        description="Whether to enable query classification (non-Islamic/fiqh detection)"
-    )
-    
-    enable_translation: bool = Field(
-        default=True,
-        description="Whether to enable automatic translation"
-    )
-    
-    enable_enhancement: bool = Field(
-        default=True,
-        description="Whether to enable query enhancement"
-    )
-    
-    stream_intermediate_steps: bool = Field(
-        default=False,
-        description="Whether to stream tool calls and intermediate steps"
-    )
-    
+    # Token-cost DEE-60 Phase 1: enable_classification / enable_translation /
+    # enable_enhancement / stream_intermediate_steps were removed — defined
+    # since the first agent version but never read by any code path. Clients
+    # that still send them are ignored by pydantic (extra='ignore' default).
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -145,11 +114,7 @@ class AgentConfig(BaseModel):
                     "agent_model": LARGE_LLM or "claude-sonnet-4-6",
                     "temperature": 0.7
                 },
-                "max_iterations": 5,
-                "enable_classification": True,
-                "enable_translation": True,
-                "enable_enhancement": True,
-                "stream_intermediate_steps": False
+                "max_iterations": 3
             }
         }
     
@@ -159,7 +124,20 @@ class AgentConfig(BaseModel):
     
     @classmethod
     def from_dict(cls, data: dict) -> "AgentConfig":
-        """Create config from dictionary."""
+        """Create config from dictionary.
+
+        Token-cost DEE-60: max_iterations is clamped into [1, 10] instead of
+        letting an out-of-range value fail validation — older clients sent 15
+        (it was previously documented), and a ValidationError here would make
+        api/chat.py silently discard the client's ENTIRE config (retrieval
+        counts, model overrides) in its fallback path.
+        """
+        if isinstance(data, dict) and "max_iterations" in data:
+            data = dict(data)
+            try:
+                data["max_iterations"] = max(1, min(int(data["max_iterations"]), 10))
+            except (TypeError, ValueError):
+                data.pop("max_iterations")  # let the field default apply
         return cls(**data)
 
 

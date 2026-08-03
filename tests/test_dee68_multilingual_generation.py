@@ -3,7 +3,13 @@ DEE-68 multilingual generation tests.
 
 Deterministic unit tests (mocked, no network) proving both the streaming
 generation template and the non-streaming `_generate_response_node` inject
-the user's `target_language` directive into the generation system message.
+the user's `target_language` directive into the rendered generation request.
+
+Token-cost DEE-60 Phase 3 note: with the cache-aware layout (AGENT_CACHE_V2,
+default on) the language directive lives in the final human message instead
+of the system message, so the model still receives it while the system block
+stays byte-identical for prompt caching. These tests therefore assert the
+directive appears anywhere in the rendered request, not in a specific slot.
 """
 from __future__ import annotations
 
@@ -11,6 +17,22 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 LANGUAGES = ["arabic", "farsi", "urdu", "german", "bahasa melayu", "french"]
+
+
+def _rendered_text(messages) -> str:
+    """Flatten every message's content (string or block-list) to one string."""
+    parts = []
+    for message in messages:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    parts.append(str(block.get("text", "")))
+                else:
+                    parts.append(str(block))
+    return "\n".join(parts)
 
 
 class TestNonStreamingLanguageInjection:
@@ -46,10 +68,9 @@ class TestNonStreamingLanguageInjection:
         assert result["final_response"] == "stub answer"
 
         call_messages = mocked_retry_ainvoke.call_args[0][1]
-        system_content = call_messages[0].content
-        system_text = system_content if isinstance(system_content, str) else str(system_content)
-        assert lang.lower() in system_text.lower(), (
-            f"target_language '{lang}' not injected into system message: {system_text[:200]}"
+        rendered = _rendered_text(call_messages)
+        assert lang.lower() in rendered.lower(), (
+            f"target_language '{lang}' not injected into the rendered request: {rendered[:200]}"
         )
 
     @pytest.mark.asyncio
@@ -85,7 +106,7 @@ class TestGeneratorMessagesTemplateInjectsLanguage:
             target_language=lang,
         )
 
-        system_message = messages[0]
-        assert lang.lower() in system_message.content.lower(), (
-            f"target_language '{lang}' not found in generator_messages system content"
+        rendered = _rendered_text(messages)
+        assert lang.lower() in rendered.lower(), (
+            f"target_language '{lang}' not found in the rendered generator messages"
         )
