@@ -22,6 +22,14 @@ async_engine = create_async_engine(
     future=True,
     pool_pre_ping=True,
     echo=False,
+    # Bounded pool — see db/session.py for the full connection-budget math.
+    # Per worker: this async engine (2+1=3) + the sync engine (2+1=3) = 6;
+    # Dockerfile `-w 2` -> 12 < 15 (Supabase session-mode client cap).
+    # Recompute if the worker count changes.
+    pool_size=2,
+    max_overflow=1,
+    pool_recycle=300,
+    pool_timeout=30,
     # asyncpg's `ssl="require"` mirrors psycopg2's `sslmode=require` used by the
     # sync engine in db/session.py — encrypt but skip cert chain verification.
     # Supabase's CA isn't in the local Python trust store on Windows, so `ssl=True`

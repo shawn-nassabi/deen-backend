@@ -46,6 +46,9 @@ class ChatState(TypedDict):
     is_non_islamic: Optional[bool]
     """True if query is not about Islamic education"""
 
+    is_casual: Optional[bool]
+    """True if the query is a casual/social message (greeting, thanks, small talk) — triggers warm early exit"""
+
     is_fiqh: Optional[bool]
     """True if query asks for a fiqh ruling"""
 
@@ -173,6 +176,7 @@ def create_initial_state(
         is_translated=False,
         original_language=None,
         is_non_islamic=None,
+        is_casual=None,
         is_fiqh=None,
         fiqh_category="",
         classification_checked=False,

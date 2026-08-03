@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## MCP servers
+
+Project-scoped MCP servers are declared in `.mcp.json` at the repo root (committed, so they
+carry over to both local CLI and Claude Code on the web).
+
+- **linear** — Linear's hosted MCP server (`https://mcp.linear.app/mcp`, streamable HTTP, OAuth 2.1).
+  Issues are tracked in Linear (`DEE-*` tickets). After cloning, run `/mcp` once and complete the
+  browser OAuth flow to authenticate; tools then cover finding/creating/updating Linear issues,
+  projects, and comments.
+
 ## Commands
 
 ```bash
@@ -29,6 +39,13 @@ python scripts/loadtest_agentic.py --n 10   # in-process concurrency loadtest
 python scripts/ingest_fiqh.py                  # full: parse PDF + embed + upsert to Pinecone (one-time)
 python scripts/ingest_fiqh.py --encoder-only   # local-only: regenerate data/fiqh_bm25_encoder.json
                                                 # (gitignored; required for fiqh queries to work locally)
+
+# Reference translation batch job (DEE-67, personal key only -- do NOT run without setting TRANSLATION_ANTHROPIC_API_KEY)
+export TRANSLATION_ANTHROPIC_API_KEY=sk-ant-...   # personal key, never the app's ANTHROPIC_API_KEY
+python scripts/translate_references.py --dry-run --limit 5   # preview counts, no Anthropic/DB calls
+python scripts/translate_references.py --ref-type hadith --languages urdu --limit 20   # small live sample
+python scripts/translate_references.py   # full corpus x all 6 languages (only after sampling looks correct)
+# Note: run `alembic upgrade head` once (creates the reference_translations table) before this script's writes will succeed.
 
 # Docker
 docker compose build --no-cache && docker compose up -d

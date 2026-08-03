@@ -513,11 +513,11 @@ async def chat_pipeline_streaming_agentic(
                     history_written = True
 
                 if hadith_docs:
-                    hadith_json = utils.format_references_as_json(hadith_docs)
+                    hadith_json = await utils.aformat_references_as_json(hadith_docs, target_language)
                     yield sse_event("hadith_references", {"references": hadith_json})
 
                 if quran_docs:
-                    quran_json = utils.format_quran_references_as_json(quran_docs)
+                    quran_json = await utils.aformat_quran_references_as_json(quran_docs, target_language)
                     yield sse_event("quran_references", {"references": quran_json})
 
             _emit_cache_metrics_breadcrumb(final_state)

@@ -1,7 +1,11 @@
 from langchain_core.documents import Document
+import asyncio
 import traceback
 import base64
 import gzip
+from typing import Optional
+
+from services import reference_translation_service
 
 def compact_format_references(retrieved_docs: list, max_chars: int = 1500) -> str:
     """
@@ -292,6 +296,66 @@ def format_quran_references_as_json(quran_docs: list) -> list:
         print(f"Error formatting Quran references: {e}")
         traceback.print_exc()
     return result
+
+
+async def aformat_references_as_json(retrieved_docs: list, language: Optional[str] = None) -> list:
+    """Async wrapper around `format_references_as_json` that additionally joins in a
+    selected-language translation (DEE-67), sourced from the `reference_translations`
+    Postgres sidecar table -- NOT from Pinecone metadata. Existing `text`/`text_ar`
+    fields are left untouched; the new `text_translated`/`translated_language` fields
+    are additive.
+
+    When `language` is unset or "english", no DB lookup is performed -- both new
+    fields are simply set to None.
+    """
+    base = format_references_as_json(retrieved_docs)
+    normalized_language = (language or "").strip().lower()
+
+    if not normalized_language or normalized_language == "english":
+        for ref in base:
+            ref["text_translated"] = None
+            ref["translated_language"] = None
+        return base
+
+    hadith_ids = [ref.get("hadith_id") for ref in base]
+    translations = await reference_translation_service.alookup_translations(
+        "hadith", hadith_ids, normalized_language
+    )
+    for ref in base:
+        ref["text_translated"] = translations.get(str(ref.get("hadith_id")))
+        ref["translated_language"] = normalized_language
+    return base
+
+
+async def aformat_quran_references_as_json(quran_docs: list, language: Optional[str] = None) -> list:
+    """Async wrapper around `format_quran_references_as_json` that additionally joins
+    in selected-language translations (DEE-67) for both the Quran verse translation
+    and the tafsir commentary, keyed by the Pinecone vector `chunk_id`.
+
+    Because the underlying sync formatter's single try/except wraps its whole loop
+    (it can return a shorter list than `quran_docs` on error), `chunk_ids` is built
+    with a defensive slice to keep it aligned 1:1 with `base`.
+    """
+    base = format_quran_references_as_json(quran_docs)
+    chunk_ids = [doc.get("chunk_id") for doc in (quran_docs or [])[: len(base)]]
+    normalized_language = (language or "").strip().lower()
+
+    if not normalized_language or normalized_language == "english":
+        for ref in base:
+            ref["quran_translation_translated"] = None
+            ref["tafsir_text_translated"] = None
+            ref["translated_language"] = None
+        return base
+
+    translation_lookup, tafsir_lookup = await asyncio.gather(
+        reference_translation_service.alookup_translations("quran_translation", chunk_ids, normalized_language),
+        reference_translation_service.alookup_translations("tafsir_text", chunk_ids, normalized_language),
+    )
+    for ref, chunk_id in zip(base, chunk_ids):
+        ref["quran_translation_translated"] = translation_lookup.get(str(chunk_id))
+        ref["tafsir_text_translated"] = tafsir_lookup.get(str(chunk_id))
+        ref["translated_language"] = normalized_language
+    return base
 
 
 def format_fiqh_references_as_json(fiqh_docs: list) -> list:

@@ -296,18 +296,34 @@ class HikmahQuizService:
         lesson = self.db.get(Lesson, page.lesson_id) if page.lesson_id else None
         topics_tested = question.tags or (lesson.tags if lesson and lesson.tags else [])
 
+        # Snapshot everything the memory event needs as plain values BEFORE
+        # releasing the DB connection. The LLM memory analysis can take several
+        # seconds, and we must not hold a pooled connection during it (Supabase
+        # session mode caps clients at 15). See _trigger_incorrect_quiz_memory_event.
+        memory_payload = {
+            "user_id": user_id,
+            "lesson_content_id": lesson_content_id,
+            "lesson_id": page.lesson_id,
+            "topics_tested": topics_tested,
+            "question_id": int(question.id),
+            "question_prompt": question.prompt,
+            "selected_choice_id": int(selected_choice.id),
+            "selected_choice_key": selected_choice.choice_key,
+            "selected_choice_text": selected_choice.choice_text,
+            "correct_choice_id": int(correct_choice.id),
+            "correct_choice_key": correct_choice.choice_key,
+            "correct_choice_text": correct_choice.choice_text,
+        }
+
+        # Release this session's connection back to the pool before the long LLM
+        # call. The reads above (e.g. self.db.get(Lesson, ...)) opened a new
+        # read-only transaction; rollback ends it and frees the connection.
+        # (Use rollback, not close — process_quiz_submission_background owns the
+        # close in its finally block.)
+        self.db.rollback()
+
         try:
-            asyncio.run(
-                self._trigger_incorrect_quiz_memory_event(
-                    user_id=user_id,
-                    lesson_content_id=lesson_content_id,
-                    question=question,
-                    selected_choice=selected_choice,
-                    correct_choice=correct_choice,
-                    lesson_id=page.lesson_id,
-                    topics_tested=topics_tested,
-                )
-            )
+            asyncio.run(self._trigger_incorrect_quiz_memory_event(**memory_payload))
         except Exception:
             logger.exception(
                 "Failed to process incorrect quiz memory event",
@@ -323,17 +339,20 @@ class HikmahQuizService:
         self,
         user_id: str,
         lesson_content_id: int,
-        question: LessonPageQuizQuestion,
-        selected_choice: LessonPageQuizChoice,
-        correct_choice: LessonPageQuizChoice,
         lesson_id: Optional[int],
         topics_tested: List[str],
+        question_id: int,
+        question_prompt: str,
+        selected_choice_id: int,
+        selected_choice_key: str,
+        selected_choice_text: str,
+        correct_choice_id: int,
+        correct_choice_key: str,
+        correct_choice_text: str,
     ) -> None:
         from agents.core.universal_memory_agent import UniversalMemoryAgent, InteractionType
 
-        memory_agent = UniversalMemoryAgent(self.db)
-
-        quiz_id = f"page:{lesson_content_id}:question:{question.id}"
+        quiz_id = f"page:{lesson_content_id}:question:{question_id}"
         interaction_data = {
             "quiz_id": quiz_id,
             "lesson_id": str(lesson_id) if lesson_id is not None else None,
@@ -344,17 +363,17 @@ class HikmahQuizService:
             "incorrect_topics": topics_tested,
             "question_details": [
                 {
-                    "question_id": int(question.id),
-                    "prompt": question.prompt,
+                    "question_id": question_id,
+                    "prompt": question_prompt,
                     "selected_choice": {
-                        "id": int(selected_choice.id),
-                        "key": selected_choice.choice_key,
-                        "text": selected_choice.choice_text,
+                        "id": selected_choice_id,
+                        "key": selected_choice_key,
+                        "text": selected_choice_text,
                     },
                     "correct_choice": {
-                        "id": int(correct_choice.id),
-                        "key": correct_choice.choice_key,
-                        "text": correct_choice.choice_text,
+                        "id": correct_choice_id,
+                        "key": correct_choice_key,
+                        "text": correct_choice_text,
                     },
                 }
             ],
@@ -363,17 +382,25 @@ class HikmahQuizService:
         context = {
             "source": "hikmah_page_quiz",
             "lesson_content_id": int(lesson_content_id),
-            "question_prompt": question.prompt,
-            "selected_choice_text": selected_choice.choice_text,
-            "correct_choice_text": correct_choice.choice_text,
+            "question_prompt": question_prompt,
+            "selected_choice_text": selected_choice_text,
+            "correct_choice_text": correct_choice_text,
         }
 
-        await memory_agent.analyze_interaction(
-            user_id=user_id,
-            interaction_type=InteractionType.QUIZ_RESULT,
-            interaction_data=interaction_data,
-            context=context,
-        )
+        # Run the LLM memory analysis on its OWN short-lived session so the long
+        # inference never holds the quiz path's pooled connection. Mirrors the
+        # pattern in modules/generation/stream_generator.py::_update_hikmah_memory.
+        memory_db = SessionLocal()
+        try:
+            memory_agent = UniversalMemoryAgent(memory_db)
+            await memory_agent.analyze_interaction(
+                user_id=user_id,
+                interaction_type=InteractionType.QUIZ_RESULT,
+                interaction_data=interaction_data,
+                context=context,
+            )
+        finally:
+            memory_db.close()
 
     # ------------------
     # Internal utilities

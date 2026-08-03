@@ -31,6 +31,7 @@ from agents.tools import (
     translate_to_english_tool,
 )
 from agents.tools.retrieval_tools import retrieve_quran_tafsir_tool_cached
+from core import prompt_templates
 from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
@@ -127,28 +128,50 @@ class ChatAgent:
         return workflow
 
     async def _fiqh_classification_node(self, state: ChatState) -> dict:
-        logger.debug("Fiqh classification started", extra={"correlation_id": correlation_id_ctx.get()})
+        # DEE-12: deterministic intent classification runs first so casual / non-Islamic
+        # messages route to the early-exit node reliably — not left to the agent's
+        # discretionary tool calls. Fiqh classification only runs for islamic intent.
+        logger.debug("Classification started", extra={"correlation_id": correlation_id_ctx.get()})
+        result: dict = {"classification_checked": True}
+
+        try:
+            from modules.classification.classifier import aclassify_intent
+
+            intent = await aclassify_intent(state["user_query"], state.get("session_id"))
+            result["is_non_islamic"] = intent == "non_islamic"
+            result["is_casual"] = intent == "casual"
+            logger.debug("Intent classification complete", extra={"correlation_id": correlation_id_ctx.get(), "intent": intent})
+        except Exception as exc:
+            logger.error("Intent classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            result["is_non_islamic"] = False
+            result["is_casual"] = False
+
+        # Casual / non-Islamic messages exit before retrieval — skip fiqh classification.
+        if result["is_non_islamic"] or result["is_casual"]:
+            result["fiqh_category"] = ""
+            result["is_fiqh"] = False
+            return result
+
         try:
             from modules.fiqh.classifier import aclassify_fiqh_query
 
             category = await aclassify_fiqh_query(state["user_query"])
-            is_fiqh = category.startswith("VALID_")
-            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": is_fiqh})
-            return {
-                "fiqh_category": category,
-                "is_fiqh": is_fiqh,
-                "classification_checked": True,
-            }
+            result["fiqh_category"] = category
+            result["is_fiqh"] = category.startswith("VALID_")
+            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": result["is_fiqh"]})
         except Exception as exc:
             logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
-            return {
-                "fiqh_category": "",
-                "is_fiqh": False,
-                "classification_checked": True,
-                "errors": state.get("errors", []) + [f"Fiqh classification error: {str(exc)}"],
-            }
+            result["fiqh_category"] = ""
+            result["is_fiqh"] = False
+            result["errors"] = state.get("errors", []) + [f"Fiqh classification error: {str(exc)}"]
+
+        return result
 
     def _route_after_fiqh_check(self, state: ChatState) -> Literal["fiqh", "exit", "continue"]:
+        # DEE-12: casual / non-Islamic intent exits deterministically before retrieval.
+        if state.get("is_casual") or state.get("is_non_islamic"):
+            logger.debug("Routing to early exit: casual/non-Islamic intent", extra={"correlation_id": correlation_id_ctx.get()})
+            return "exit"
         category = state.get("fiqh_category", "")
         if category in {"VALID_OBVIOUS", "VALID_SMALL", "VALID_LARGE", "VALID_REASONER"}:
             logger.debug("Routing to fiqh sub-graph", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category})
@@ -248,6 +271,7 @@ class ChatAgent:
 
             if tool_name == "check_if_non_islamic_tool":
                 state["is_non_islamic"] = result_data.get("is_non_islamic", False)
+                state["is_casual"] = result_data.get("is_casual", False)
                 state["classification_checked"] = True
                 continue
 
@@ -285,17 +309,11 @@ class ChatAgent:
 
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
-        generation_messages = [
-            make_cached_system_message(AGENT_SYSTEM_PROMPT),
-            HumanMessage(
-                content=f"""User query: {state['user_query']}
-
-Retrieved references:
-{references}
-
-Generate a comprehensive, accurate response that directly addresses the user's question using the retrieved sources. Cite specific books, hadith numbers, and scholars when referencing the sources."""
-            ),
-        ]
+        generation_messages = prompt_templates.generator_messages(
+            query=state["user_query"],
+            references=references,
+            target_language=state["target_language"],
+        )
 
         try:
             from core.chat_models import get_generator_model
@@ -314,14 +332,48 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     async def _check_early_exit_node(self, state: ChatState) -> dict:
         logger.debug("Check early exit node", extra={"correlation_id": correlation_id_ctx.get()})
-        from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC
+        from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC, EARLY_EXIT_CASUAL
 
+        # --- Casual branch (greetings, thanks, small talk) ---
+        if state.get("is_casual"):
+            try:
+                from core.chat_models import get_classifier_model
+                model = get_classifier_model()
+                prompt_text = (
+                    f"The user sent a casual or social message: '{state['user_query']}'\n\n"
+                    "Reply warmly and briefly (1 sentence). Invite them to ask about "
+                    "Twelver Shia Islam — theology, history, the Imams, the Quran, or practice. "
+                    "Do not fabricate any religious content. Do not use emojis."
+                )
+                from langchain_core.messages import HumanMessage
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                msg = response.content.strip()
+            except Exception as exc:
+                logger.error("LLM casual reply error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+                msg = EARLY_EXIT_CASUAL
+            return {"final_response": msg, "early_exit_message": msg}
+
+        # --- Non-Islamic branch ---
         if state.get("is_non_islamic"):
-            return {
-                "final_response": EARLY_EXIT_NON_ISLAMIC,
-                "early_exit_message": EARLY_EXIT_NON_ISLAMIC,
-            }
+            try:
+                from core.chat_models import get_classifier_model
+                model = get_classifier_model()
+                prompt_text = (
+                    f"A user asked: '{state['user_query']}'\n\n"
+                    "This question is outside your scope — you specialize in Twelver Shia Islamic "
+                    "education. Warmly and briefly (1-2 sentences) let them know you focus on "
+                    "Islamic topics and invite an on-topic question. "
+                    "Do NOT answer the off-topic question. Do not use emojis."
+                )
+                from langchain_core.messages import HumanMessage
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                msg = response.content.strip()
+            except Exception as exc:
+                logger.error("LLM non-Islamic rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+                msg = EARLY_EXIT_NON_ISLAMIC
+            return {"final_response": msg, "early_exit_message": msg}
 
+        # --- Fiqh UNETHICAL branch (unchanged) ---
         category = state.get("fiqh_category", "")
         if category == "UNETHICAL":
             # LLM-generated personalized rejection message (D-12)
@@ -333,7 +385,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     f"A user asked: '{state['user_query']}'\n\n"
                     "This question asks for a ruling on something harmful or unethical. "
                     "Politely decline to answer in 1-2 sentences, without judging the user. "
-                    "Do not provide any ruling."
+                    "Do not provide any ruling. Do not use emojis."
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
@@ -453,7 +505,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             }
 
     def _should_continue(self, state: ChatState) -> Literal["continue", "generate", "exit", "end"]:
-        if state.get("is_non_islamic") or state.get("is_fiqh"):
+        if state.get("is_non_islamic") or state.get("is_fiqh") or state.get("is_casual"):
             logger.debug("Routing: early exit", extra={"correlation_id": correlation_id_ctx.get()})
             return "exit"
 

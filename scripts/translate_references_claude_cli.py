@@ -1,0 +1,367 @@
+"""
+Offline batch MT job: translate the hadith + tafsir_text reference corpus
+(Quran translation MT is currently held out -- see DISABLED_REF_TYPES) into the
+`reference_translations` Postgres sidecar table, across the 6 canonical languages.
+
+This is a copy of `scripts/translate_references.py` that swaps the raw Anthropic SDK
+client for a subprocess call to the local Claude Code CLI (`claude -p`). Translations
+therefore run on your authenticated **Claude Code subscription** (OAuth) and consume
+**no Anthropic API credits** -- unlike the original, which spends a dedicated paid key
+(`TRANSLATION_ANTHROPIC_API_KEY`). Everything else (Pinecone source reads, DB upsert,
+batch loop, system prompt) is identical to the original.
+
+This is a re-runnable, idempotent, human-triggered CLI tool -- it is NEVER invoked by
+application code, a route, or CI.
+
+Requirements:
+    - The local `claude` CLI must be installed and logged in to your Claude Code
+      subscription (verify with a quick `claude -p "hi"`).
+    - `PINECONE_API_KEY`, `DEEN_DENSE_INDEX_NAME`, `QURAN_DENSE_INDEX_NAME` must be set to
+      REAL values -- source text is read from Pinecone.
+    - `ANTHROPIC_API_KEY` must merely be PRESENT (any non-empty value, e.g.
+      `export ANTHROPIC_API_KEY=unused`) to satisfy core.config's import-time guard. This
+      variant constructs NO Anthropic client, so that key is never used to translate and no
+      API credits are ever spent.
+    - `alembic upgrade head` must have been run once so the `reference_translations` table
+      exists before this script's writes will succeed.
+
+Usage:
+    python scripts/translate_references_claude_cli.py --dry-run --limit 5   # preview counts, no CLI/DB calls
+    python scripts/translate_references_claude_cli.py --ref-type hadith --languages urdu --limit 20   # small live sample
+    python scripts/translate_references_claude_cli.py   # full corpus x all 6 languages (only after sampling looks correct)
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterator, Optional
+
+# Add project root to sys.path (required for local imports)
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from pinecone import Pinecone
+
+from core.config import DEEN_DENSE_INDEX_NAME, PINECONE_API_KEY, QURAN_DENSE_INDEX_NAME
+from core.logging_config import setup_logging
+from core.utils import decompress_text
+from db.models.reference_translations import ReferenceTranslation
+from db.session import SessionLocal
+
+setup_logging()
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------ #
+# Constants
+# ------------------------------------------------------------------ #
+
+SUPPORTED_LANGUAGES = ["arabic", "farsi", "urdu", "german", "bahasa melayu", "french"]
+REF_TYPE_CHOICES = ["hadith", "quran_translation", "tafsir_text"]
+
+# Quran MT hold-out (DEE-67 follow-up): the stored Quran text
+# (`english_quran_translation`) is already an English rendering of the Arabic, so
+# running it through this MT job would pivot-translate (Arabic -> English -> target
+# language), double-translating the literal Qur'anic text. Quran should use published
+# direct translations instead. Hadith and tafsir MT (translated from their own stored
+# English) are unaffected and remain enabled. To re-enable Quran MT, remove
+# "quran_translation" from this set.
+DISABLED_REF_TYPES = {"quran_translation"}
+
+# Model alias passed to `claude --model`. "sonnet" resolves to the latest Sonnet.
+# Overridable via --model (accepts an alias like "opus"/"haiku" or a full model id).
+DEFAULT_MODEL = "sonnet"
+
+# Per-call wall-clock cap for the `claude` subprocess. Each invocation launches the full
+# CLI plus one model turn, so this is generous (matches the reference sample's 10 min).
+CLAUDE_TIMEOUT_SECONDS = 600
+
+TRANSLATION_SYSTEM_PROMPT = (
+    "You are a faithful, literal translator of Twelver Shia Islamic reference texts "
+    "(hadith, Quran translations, and tafsir commentary) into {language}. "
+    "Preserve all meaning, terminology, honorifics, and the Twelver Shia theological "
+    "framing of the source text exactly. Do not add interpretation, commentary, "
+    "opinion, or fatwa-like guidance of your own. Do not omit or summarize any part "
+    "of the text. Return ONLY the translated text, with no preamble, explanation, or "
+    "additional commentary."
+)
+
+
+# ------------------------------------------------------------------ #
+# CLI / client setup
+# ------------------------------------------------------------------ #
+
+def parse_args(argv=None) -> argparse.Namespace:
+    """Parse CLI arguments for the batch translation job."""
+    parser = argparse.ArgumentParser(
+        description="Batch-translate the hadith/Quran/tafsir reference corpus into "
+        "reference_translations via the local `claude` CLI (Claude Code subscription)"
+    )
+    parser.add_argument(
+        "--languages",
+        default=",".join(SUPPORTED_LANGUAGES),
+        help="Comma-separated list of target languages (default: all 6 canonical languages)",
+    )
+    parser.add_argument(
+        "--ref-type",
+        choices=REF_TYPE_CHOICES + ["all"],
+        default="all",
+        help="Which reference type to translate (default: all)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview counts only; never call the claude CLI or write to the database",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Cap number of source items enumerated per ref_type, for sampling",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Model passed to `claude --model` and stored in the DB model column "
+        f"(default: {DEFAULT_MODEL})",
+    )
+    return parser.parse_args(argv)
+
+
+def _resolve_enabled_ref_types(ref_type_arg: str) -> list[str]:
+    """Resolve the requested `--ref-type` CLI arg into the enabled subset of
+    REF_TYPE_CHOICES, filtering out anything in DISABLED_REF_TYPES.
+
+    Logs a WARNING for each requested ref_type that is currently disabled
+    (Quran MT hold-out). Order is preserved from REF_TYPE_CHOICES.
+    """
+    requested = REF_TYPE_CHOICES if ref_type_arg == "all" else [ref_type_arg]
+    enabled = [rt for rt in requested if rt not in DISABLED_REF_TYPES]
+    skipped = [rt for rt in requested if rt in DISABLED_REF_TYPES]
+
+    for ref_type in skipped:
+        logger.warning(
+            "ref_type=%s is disabled for now (Quran MT hold-out) and will be skipped. "
+            "Remove it from DISABLED_REF_TYPES in scripts/translate_references_claude_cli.py to re-enable.",
+            ref_type,
+        )
+
+    return enabled
+
+
+def _preflight_claude_cli() -> None:
+    """Verify the local `claude` CLI is available on PATH before a live run.
+
+    Unlike the original script, this variant constructs NO Anthropic client and reads no
+    API key: translation is performed by shelling out to `claude -p`, which authenticates
+    via your Claude Code subscription (no API credits are consumed).
+    """
+    if shutil.which("claude") is None:
+        raise RuntimeError(
+            "The `claude` CLI was not found on PATH. This batch job translates by shelling "
+            "out to the local Claude Code CLI (`claude -p`), which uses your Claude Code "
+            "subscription instead of API credits. Install the CLI and log in "
+            '(verify with `claude -p "hi"`) before running.'
+        )
+
+
+# ------------------------------------------------------------------ #
+# Translation + upsert
+# ------------------------------------------------------------------ #
+
+def translate_text(*, model: str, text: str, language: str) -> str:
+    """Translate a single piece of reference text into `language` by shelling out to the
+    local `claude` CLI in print mode.
+
+    Uses the Claude Code subscription (OAuth), not the Anthropic API -- no API credits are
+    consumed. Raises on non-zero exit, timeout, or empty output so the caller's per-item
+    error handling logs it and continues with the run.
+    """
+    system_prompt = TRANSLATION_SYSTEM_PROMPT.format(language=language)
+    result = subprocess.run(
+        [
+            "claude",
+            "-p",
+            "--model",
+            model,
+            # Full-replace system prompt -> a clean literal translator, none of Claude
+            # Code's default agentic framing.
+            "--system-prompt",
+            system_prompt,
+            # Skip CLAUDE.md / skills / plugins / hooks (subscription auth stays normal).
+            "--safe-mode",
+            # Disable all built-in tools -> pure text generation, no tool/permission surface.
+            "--tools",
+            "",
+            "--no-session-persistence",
+        ],
+        input=text,
+        capture_output=True,
+        text=True,
+        timeout=CLAUDE_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"claude CLI exited {result.returncode}: {result.stderr.strip()[:500]}"
+        )
+    translated = result.stdout.strip()
+    if not translated:
+        raise RuntimeError("claude CLI returned empty output")
+    return translated
+
+
+def upsert_translation(
+    session_factory,
+    *,
+    ref_type: str,
+    ref_key: str,
+    language: str,
+    translated_text: str,
+    model_name: str,
+) -> None:
+    """Idempotent upsert of a single translated row, keyed by the composite PK."""
+    with session_factory() as db:
+        row = ReferenceTranslation(
+            ref_type=ref_type,
+            ref_key=str(ref_key),
+            language=language,
+            translated_text=translated_text,
+            source="mt",
+            translated_at=datetime.now(timezone.utc),
+            model=model_name,
+        )
+        db.merge(row)
+        db.commit()
+
+
+# ------------------------------------------------------------------ #
+# Corpus enumeration
+# ------------------------------------------------------------------ #
+
+def _iter_source_items(
+    pc_index, *, namespace: str = "ns1", limit: Optional[int] = None
+) -> Iterator[tuple[str, dict]]:
+    """Yield (item_id, metadata_dict) tuples by paging through a Pinecone index's
+    `.list()` (id pages) and `.fetch()` (id -> vector w/ metadata), stopping once
+    `limit` items have been yielded (if `limit` is not None)."""
+    yielded = 0
+    for page_ids in pc_index.list(namespace=namespace):
+        if not page_ids:
+            continue
+        fetched = pc_index.fetch(ids=page_ids, namespace=namespace)
+        for vector_id, vector in fetched.vectors.items():
+            yield vector_id, (vector.metadata or {})
+            yielded += 1
+            if limit is not None and yielded >= limit:
+                return
+
+
+def _extract_text_for_ref_type(ref_type: str, metadata: dict) -> Optional[str]:
+    """Extract and decompress the source-language text for a given ref_type from
+    raw Pinecone metadata."""
+    if ref_type == "hadith":
+        raw = metadata.get("text_en", "") or ""
+    elif ref_type == "quran_translation":
+        raw = metadata.get("english_quran_translation", "") or ""
+    elif ref_type == "tafsir_text":
+        raw = metadata.get("text_chunk", "") or ""
+    else:
+        return None
+    return decompress_text(raw) or None
+
+
+def _index_name_for_ref_type(ref_type: str) -> str:
+    if ref_type == "hadith":
+        return DEEN_DENSE_INDEX_NAME
+    return QURAN_DENSE_INDEX_NAME
+
+
+# ------------------------------------------------------------------ #
+# Batch runner
+# ------------------------------------------------------------------ #
+
+def run_batch(
+    *,
+    languages: list[str],
+    ref_types: list[str],
+    limit: Optional[int],
+    dry_run: bool,
+    model_name: str,
+    pc_client,
+    session_factory,
+) -> dict:
+    """Run the batch translation job. Returns a nested summary dict
+    {ref_type: {language: count}} of items that were (or, on --dry-run, would be)
+    translated. One bad item/language never aborts the whole run."""
+    summary: dict[str, dict[str, int]] = {rt: {lang: 0 for lang in languages} for rt in ref_types}
+
+    for ref_type in ref_types:
+        pc_index = pc_client.Index(_index_name_for_ref_type(ref_type))
+        for item_id, metadata in _iter_source_items(pc_index, limit=limit):
+            text = _extract_text_for_ref_type(ref_type, metadata)
+            if not text:
+                continue
+
+            for language in languages:
+                try:
+                    summary[ref_type][language] += 1
+                    if dry_run:
+                        continue
+                    translated = translate_text(
+                        model=model_name, text=text, language=language
+                    )
+                    upsert_translation(
+                        session_factory,
+                        ref_type=ref_type,
+                        ref_key=item_id,
+                        language=language,
+                        translated_text=translated,
+                        model_name=model_name,
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to translate/upsert item_id=%s ref_type=%s language=%s",
+                        item_id,
+                        ref_type,
+                        language,
+                        exc_info=True,
+                    )
+
+    return summary
+
+
+def main() -> None:
+    args = parse_args()
+    languages = [lang.strip().lower() for lang in args.languages.split(",") if lang.strip()]
+    ref_types = _resolve_enabled_ref_types(args.ref_type)
+
+    if not ref_types:
+        logger.error(
+            "No enabled ref_types remain after filtering DISABLED_REF_TYPES for --ref-type=%s. "
+            "Use --ref-type hadith or --ref-type tafsir_text instead.",
+            args.ref_type,
+        )
+        return
+
+    if not args.dry_run:
+        _preflight_claude_cli()
+    pc_client = Pinecone(api_key=PINECONE_API_KEY)
+
+    summary = run_batch(
+        languages=languages,
+        ref_types=ref_types,
+        limit=args.limit,
+        dry_run=args.dry_run,
+        model_name=args.model,
+        pc_client=pc_client,
+        session_factory=SessionLocal,
+    )
+    logger.info("Batch complete: %s", summary)
+
+
+if __name__ == "__main__":
+    main()
