@@ -32,6 +32,13 @@ class _FakeRedis:
     async def set(self, key, value, ex=None):
         self.store[key] = value
 
+    async def incr(self, key):
+        self.store[key] = int(self.store.get(key, 0)) + 1
+        return self.store[key]
+
+    async def expire(self, key, ttl):
+        return True
+
 
 class _FakeHistory:
     def __init__(self, messages):
@@ -77,24 +84,33 @@ def test_no_refresh_below_trigger(monkeypatch):
 
 def test_refresh_summarizes_older_turns_and_stores(monkeypatch):
     monkeypatch.delenv("HISTORY_SUMMARY", raising=False)
-    # 14 messages: (14 - 10) % 4 == 0 -> refresh runs
-    fake_redis, calls = _patch_env(monkeypatch, _turns(7))
+    fake_redis, calls = _patch_env(monkeypatch, _turns(7))  # 14 messages
+    # Pre-seed the turn counter so this call is the (even) second turn.
+    fake_redis.store[summary_service._turn_counter_key("s1")] = 1
     _run(summary_service.refresh_session_summary("s1"))
 
     assert len(calls) == 1
     prompt = calls[0][0].content
     assert "question 0" in prompt
-    assert "question 6" not in prompt, "the freshest turns must NOT be summarized"
+    assert "question 6" not in prompt, "the freshest turn must NOT be summarized"
     stored = fake_redis.store[summary_service._summary_key("s1")]
     assert b"patience" in stored
 
 
-def test_refresh_cadence_every_second_turn(monkeypatch):
+def test_refresh_cadence_every_second_turn_even_at_history_cap(monkeypatch):
+    """The cadence gate uses a Redis turn counter, NOT history length — at the
+    30-message trim cap the length is constant, and a length-modulo gate would
+    degenerate to refreshing every turn (review finding 1)."""
     monkeypatch.delenv("HISTORY_SUMMARY", raising=False)
-    # 12 messages: (12 - 10) % 4 == 2 -> skip this turn
-    fake_redis, calls = _patch_env(monkeypatch, _turns(6))
-    _run(summary_service.refresh_session_summary("s1"))
-    assert calls == [] and fake_redis.store == {}
+    fake_redis, calls = _patch_env(monkeypatch, _turns(15))  # 30 msgs == the cap
+    _run(summary_service.refresh_session_summary("s1"))  # turn 1 -> skip
+    assert calls == []
+    _run(summary_service.refresh_session_summary("s1"))  # turn 2 -> refresh
+    assert len(calls) == 1
+    _run(summary_service.refresh_session_summary("s1"))  # turn 3 -> skip
+    assert len(calls) == 1
+    _run(summary_service.refresh_session_summary("s1"))  # turn 4 -> refresh
+    assert len(calls) == 2
 
 
 def test_kill_switch_disables_everything(monkeypatch):

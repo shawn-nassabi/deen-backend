@@ -69,6 +69,11 @@ class ChatAgent:
     """
 
     def __init__(self, config: AgentConfig = None):
+        # INVARIANT (token-cost DEE-60 Phase 3): ChatAgent must be constructed
+        # PER REQUEST (core/pipeline_langgraph.py does this). The MemorySaver
+        # below is per-instance, and the AGENT_CACHE_V2 append-only message
+        # persistence relies on it — a cached/shared ChatAgent would leak one
+        # turn's iteration summaries into another via the checkpointer.
         self.config = config or DEFAULT_AGENT_CONFIG
         # check_if_non_islamic_tool is deliberately NOT bound (token-cost
         # Phase 1, DEE-60): intent classification already runs
@@ -315,12 +320,6 @@ class ChatAgent:
             tool_name = message.name
             result_data = self._parse_tool_payload(message.content)
             logger.debug("Tool executed", extra={"correlation_id": correlation_id_ctx.get(), "tool_name": tool_name})
-
-            if tool_name == "check_if_non_islamic_tool":
-                state["is_non_islamic"] = result_data.get("is_non_islamic", False)
-                state["is_casual"] = result_data.get("is_casual", False)
-                state["classification_checked"] = True
-                continue
 
             if tool_name == "translate_to_english_tool":
                 translated_text = result_data.get("translated_text") or state["working_query"]

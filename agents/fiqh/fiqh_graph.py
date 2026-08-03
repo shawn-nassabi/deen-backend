@@ -149,7 +149,11 @@ async def _filter_node(state: FiqhState) -> dict:
             "iteration": state["iteration"],
             "error": str(exc),
         })
-        filtered = list(state["accumulated_docs"])  # fail open
+        # Fail open with the CAPPED list (review finding: failing open with
+        # the uncapped accumulation let a stuck-at-30 set push the next
+        # round's fresh RRF-best docs beyond the cap, silently excluding
+        # them from filtering and SEA).
+        filtered = list(docs_in)  # fail open (capped)
 
     return {
         "accumulated_docs": filtered,

@@ -30,11 +30,13 @@ from core import memory
 
 logger = logging.getLogger(__name__)
 
-# Aligned with core/history_budget.py: budgets keep ~10 recent messages, so
-# the summary covers everything older than the freshest 8 once a session
-# grows past the trigger.
+# Aligned with core/history_budget.py: budgets keep ~10 recent messages.
+# The summary covers everything except the freshest TURN (2 messages) —
+# overlapping the kept window is benign duplication, but a gap would be a
+# silent context hole when the char budget shrinks the window below 8
+# messages (review finding: budget can keep as few as 2 on long turns).
 SUMMARY_TRIGGER_MSGS = 10
-SUMMARY_KEEP_RECENT = 8
+SUMMARY_KEEP_RECENT = 2
 SUMMARY_MAX_CHARS = 1000
 _TRANSCRIPT_CHAR_CAP = 12000
 
@@ -56,6 +58,10 @@ def summaries_enabled() -> bool:
 
 def _summary_key(session_id: str) -> str:
     return f"{memory.KEY_PREFIX}:{session_id}:summary"
+
+
+def _turn_counter_key(session_id: str) -> str:
+    return f"{memory.KEY_PREFIX}:{session_id}:summary_turns"
 
 
 async def get_session_summary(session_id: str) -> Optional[str]:
@@ -80,9 +86,16 @@ async def refresh_session_summary(session_id: str) -> None:
         messages = await memory.amake_history(session_id).aget_messages()
         if len(messages) <= SUMMARY_TRIGGER_MSGS:
             return
-        # Refresh every SECOND turn only (each turn adds 2 messages) to halve
-        # generation-cache churn — see the cache note in the module docstring.
-        if (len(messages) - SUMMARY_TRIGGER_MSGS) % 4 != 0:
+        # Refresh every SECOND persisted turn to halve generation-cache churn
+        # (see module docstring). Gated on a dedicated Redis turn counter, NOT
+        # on history length: once atrim_history caps the list at
+        # REDIS_MAX_MESSAGES the length is constant (a length-modulo gate
+        # would then fire every turn — review finding 1), and odd-length
+        # histories after a failed stream would never fire (finding 2).
+        client = memory._get_async_redis()
+        turn_count = await client.incr(_turn_counter_key(session_id))
+        await client.expire(_turn_counter_key(session_id), memory.TTL_SECONDS)
+        if turn_count % 2 != 0:
             return
 
         older = messages[:-SUMMARY_KEEP_RECENT]

@@ -211,19 +211,9 @@ enhancer_prompt_template = ChatPromptTemplate.from_messages(
 )
 
 # Promt templates for elaboration query enhancer
-
-elborationEnhancerSystemTemplate = """
-You are an AI assistant for a Twelver Shia Islam application, enhancing user selected text from a hikmah (knowledge) tree lesson to help query relevent information about it from a knowledge database.
-Given a User Selected Text, Context Text (text around the selected text), Hikmah(Knowledge) Tree Name, Lesson Name and Lesson Summary; your task is to generate a enhanced query that captures users intent while providing additional context to improve retrieval.
-
-Generate a enhanced query while ensuring that:
-It retains the same intent and meaning, specfically about the user selected part in the context.
-It includes relevant clarifications or disambiguations if the selected text is vague.
-It improves completeness by making implicit details more explicit.
-It remains concise and does not add unnecessary complexity.
-
-Feel free to add some synonyms or additional key words to make the query more vocabulary rich for Islamic content retrieval.
-"""
+# (token-cost DEE-60 cleanup: the old elborationEnhancerSystemTemplate constant
+# was removed — it was defined but never used; elaboration_enhancer_prompt_template
+# below has always bound enhancerSystemTemplate instead.)
 
 elaborationEnhancerUserTemplate = """You are provided with the following details:
 User Selected Text: {selected_text}

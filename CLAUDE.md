@@ -100,9 +100,27 @@ Current LLM defaults: `LARGE_LLM=claude-sonnet-4-6`, `SMALL_LLM=claude-haiku-4-5
 
 ### Agentic pipeline (LangGraph)
 
-`core/pipeline_langgraph.py` implements the active pipeline as a LangGraph graph. The agent uses 9 tools (across `agents/tools/`: 4 retrieval, 2 classification, 2 translation, 1 enhancement) bound to the LLM via `.bind_tools()`. Key early-exit conditions: `non_islamic` classification and `fiqh` routing — when fiqh is detected, control hands off to the FAIR-RAG subsystem (see below). When adding new agentic behavior, write tests around tool-selection outcomes and these early-exit paths.
+`core/pipeline_langgraph.py` implements the active pipeline as a LangGraph graph. The agent binds **5 tools** (3 retrieval: shia/sunni/quran-tafsir; 1 translation; 1 enhancement) via `.bind_tools()` — intent and fiqh classification run deterministically in the `fiqh_classification` entry node *before* the agent, so there is no classification tool (removed in DEE-60 Phase 1; `agents/tools/` exports a few additional legacy tools that are not bound). Key early-exit conditions: `non_islamic`/`casual` classification and `fiqh` routing — when fiqh is detected, control hands off to the FAIR-RAG subsystem (see below). When adding new agentic behavior, write tests around tool-selection outcomes and these early-exit paths.
 
 All graph nodes and bound tools are now natively async (DEE-41/DEE-42); `agent.astream()` is the streaming entry point and never blocks the event loop on LLM, Pinecone, or Redis I/O. Per-token streaming uses `chain.astream()` (DEE-40) inside an `async def` generator.
+
+### Token-cost architecture (DEE-60 — landed)
+
+Input-token cost on the agentic path was cut ~56%/turn (details: `documentation/DEE-60-token-cost-changes.md`; raw numbers: `documentation/token_baseline.md`). Invariants to preserve when editing this area:
+
+- **Prompt-cache byte stability**: `AGENT_SYSTEM_PROMPT`, the bound tool list/docstrings, and the generator's static block are part of Anthropic's cached byte-prefix. Never interpolate per-request values into them — dynamic content belongs in messages, after the cached prefix. The agent loop is append-only (system sent every iteration; iteration N+1 must render as an exact prefix-extension of iteration N).
+- **Planner vs generator doc views**: retrieval tools store FULL docs in state (`retrieved_docs`/`quran_docs` — consumed by generation and the SSE reference events); the planner's ToolMessages are rewritten to compact cards (`_compact_tool_message`). Never feed full doc JSON back into `state["messages"]`.
+- **Metadata whitelists** at the retrieval boundary (`HADITH_METADATA_WHITELIST`, `QURAN_METADATA_WHITELIST`) — extend them when a new consumer needs a field; compressed `text_en`/`text_ar`/`text_chunk` blobs must never leave retrieval.
+- **History budgets are read-side only** (`core/history_budget.py`); Redis stores the full window. Long chats get a background Haiku summary (`services/summary_service.py`).
+- **Fiqh evidence text is never truncated** (FAIR-RAG faithfulness); fiqh token work is retrieval/orchestration-side only.
+- Per-request, per-call-site usage telemetry lives in `core/token_telemetry.py` (raw Anthropic usage; never LangChain's `usage_metadata` wrapper) and rides the Sentry `cache_metrics` breadcrumb.
+- Kill-switch env vars (all default on; `=0` reverts a phase): `TOOLMSG_COMPACT`, `HISTORY_BUDGETS`, `AGENT_CACHE_V2`, `FIQH_V2_RETRIEVAL`, `HISTORY_SUMMARY`.
+
+```bash
+# Token bench (requires server started with TOKEN_BENCH_DEBUG=1)
+python scripts/token_bench.py --label <name>                 # 32-entry golden set -> documentation/token_baseline.md
+python scripts/token_bench.py --judge phase-4 <name>         # blind A/B answer-quality judge between two runs
+```
 
 ### Fiqh subsystem (FAIR-RAG)
 
@@ -168,7 +186,7 @@ An enhancement to the Deen Islamic education platform's chatbot agent that enabl
 ### Constraints
 
 - **Tech Stack**: Must integrate with existing FastAPI + LangGraph + Pinecone + Redis stack
-- **LLM Provider**: OpenAI models — gpt-4.1 (large) and gpt-4o-mini (small) for dynamic allocation
+- **LLM Provider**: Anthropic via `langchain-anthropic` — `LARGE_LLM=claude-sonnet-4-6`, `SMALL_LLM=claude-haiku-4-5-20251001` (the original OpenAI constraint is historical; see "Current LLM defaults" above)
 - **Retrieval**: Pinecone for both dense and sparse indices (separate from existing hadith/Quran indices)
 - **Iterations**: Max 3 retrieval iterations per query (research shows diminishing returns beyond 3)
 - **Religious Sensitivity**: Never issue fatwas, always include disclaimers, refuse rather than speculate
@@ -352,14 +370,11 @@ An enhancement to the Deen Islamic education platform's chatbot agent that enabl
 - `ChatState` is a `TypedDict` carrying all state through the graph.
 - Key fields: `messages` (LangGraph `add_messages` reducer), `user_query`, `working_query`, `retrieved_docs`, `quran_docs`, `source_coverage`, `early_exit_message`, `errors`, `iterations`.
 - `create_initial_state()` is the canonical state factory; always call this — never construct `ChatState` directly.
-- `classification_tools.py`: `check_if_non_islamic_tool`, `check_if_fiqh_tool`
-- `translation_tools.py`: `translate_to_english_tool`, `translate_response_tool`
-- `enhancement_tools.py`: `enhance_query_tool`
-- `retrieval_tools.py`: `retrieve_shia_documents_tool`, `retrieve_sunni_documents_tool`, `retrieve_combined_documents_tool`, `retrieve_quran_tafsir_tool`
-- All decorated with `@tool` (LangChain). Tool docstrings are consumed by the LLM to decide when to call each tool.
-- Each tool delegates directly to the corresponding `modules/` function.
+- Bound to the agent (DEE-60 Phase 1): `translate_to_english_tool`, `enhance_query_tool`, `retrieve_shia_documents_tool`, `retrieve_sunni_documents_tool`, `retrieve_quran_tafsir_tool`. Legacy tools still defined but NOT bound: `check_if_non_islamic_tool` (classification runs deterministically pre-agent), `check_if_fiqh_tool`, `translate_response_tool`, `retrieve_combined_documents_tool`.
+- All decorated with `@tool` (LangChain). Tool docstrings are consumed by the LLM to decide when to call each tool — they are part of the cached prompt prefix; keep them byte-stable and terse.
+- Each tool delegates directly to the corresponding `modules/` function. Retrieval doc counts are clamped (shia 1-10, sunni 0-5, quran 0-5).
 - Pydantic models: `RetrievalConfig`, `ModelConfig`, `AgentConfig`.
-- Controls doc counts per source, model/temperature, max iterations, and feature flags (enable_classification, enable_translation, enable_enhancement).
+- Controls doc counts per source, model/temperature, and max iterations (default 3, max 10). The old feature-flag fields (enable_classification/enable_translation/enable_enhancement, reranking_enabled, dense/sparse_weight, stream_intermediate_steps) were removed in DEE-60 — they were never read; clients still sending them are ignored.
 - `DEFAULT_AGENT_CONFIG = AgentConfig()` used when no per-request config is provided.
 - Clients can override via the `config` field in the `ChatRequest` body.
 - `classification/classifier.py`: Classifies queries as non-Islamic or fiqh using the LLM.

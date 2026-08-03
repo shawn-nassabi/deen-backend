@@ -124,7 +124,20 @@ class AgentConfig(BaseModel):
     
     @classmethod
     def from_dict(cls, data: dict) -> "AgentConfig":
-        """Create config from dictionary."""
+        """Create config from dictionary.
+
+        Token-cost DEE-60: max_iterations is clamped into [1, 10] instead of
+        letting an out-of-range value fail validation — older clients sent 15
+        (it was previously documented), and a ValidationError here would make
+        api/chat.py silently discard the client's ENTIRE config (retrieval
+        counts, model overrides) in its fallback path.
+        """
+        if isinstance(data, dict) and "max_iterations" in data:
+            data = dict(data)
+            try:
+                data["max_iterations"] = max(1, min(int(data["max_iterations"]), 10))
+            except (TypeError, ValueError):
+                data.pop("max_iterations")  # let the field default apply
         return cls(**data)
 
 

@@ -496,10 +496,14 @@ async def chat_pipeline_streaming_agentic(
 
                     answer_text = "".join(response_tokens).strip()
 
-                    # Post-process: append ## Sources, optional insufficient warning, fatwa disclaimer
+                    # Post-process: append ## Sources, optional insufficient warning,
+                    # fatwa disclaimer. assistant_text is assembled in the SAME
+                    # order the chunks are streamed, so a session reloaded from
+                    # history reads identically to the live stream (review fix).
                     references_section = _build_references_section(answer_text, fiqh_docs)
                     if references_section:
                         yield sse_event("response_chunk", {"token": references_section})
+                        answer_text += references_section
 
                     if not is_sufficient:
                         yield sse_event("response_chunk", {"token": INSUFFICIENT_WARNING})
@@ -507,8 +511,6 @@ async def chat_pipeline_streaming_agentic(
 
                     yield sse_event("response_chunk", {"token": FATWA_DISCLAIMER})
                     answer_text += FATWA_DISCLAIMER
-                    if references_section:
-                        answer_text += references_section
 
                     assistant_text = answer_text
                     yield sse_event("response_end", {})
