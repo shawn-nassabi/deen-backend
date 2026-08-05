@@ -145,6 +145,9 @@ async def agenerate_answer(
     """Native async variant of `generate_answer`."""
     try:
         response = await _agenerate_answer_call(query, docs)
+        from core.token_telemetry import record_llm_usage
+
+        record_llm_usage("fiqh_generator", response)
         return _post_process_answer(response.content.strip(), docs, is_sufficient)
     except Exception:
         logger.error(

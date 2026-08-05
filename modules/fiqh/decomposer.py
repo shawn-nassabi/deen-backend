@@ -95,6 +95,9 @@ async def adecompose_query(query: str) -> list[str]:
     """Native async variant of `decompose_query`."""
     try:
         response = await _adecompose_query_call(query)
+        from core.token_telemetry import record_llm_usage
+
+        record_llm_usage("fiqh_decomposer", response)
         return _parse_subqueries(response.content.strip(), query)
     except Exception:
         logger.error(

@@ -16,23 +16,13 @@ logger = logging.getLogger(__name__)
 @tool
 async def translate_to_english_tool(text: str, source_language: str) -> Dict[str, str]:
     """
-    Translate text from another language to English.
+    Translate the user's query to English (retrieval runs on English text).
 
-    Use this tool when the user's query appears to be in a language other than English.
-    The system needs queries in English for retrieval and processing.
+    Only use when the query is in a language other than English.
 
     Args:
-        text: The text to translate
-        source_language: The source language (e.g., "arabic", "urdu", "french", etc.)
-
-    Returns:
-        Dictionary with:
-        - translated_text (str): The English translation
-        - original_text (str): The original text
-        - source_language (str): The detected/provided source language
-
-    Note: If translation fails, returns the original text. If source_language is "english",
-    returns the text unchanged.
+        text: The text to translate.
+        source_language: The source language (e.g. "arabic", "urdu").
     """
     try:
         if source_language.lower().strip() == "english":

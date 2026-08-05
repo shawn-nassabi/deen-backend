@@ -7,6 +7,7 @@ that decides which tools to use and when.
 
 import asyncio
 import json
+import os
 from typing import AsyncGenerator, Optional
 
 import anthropic
@@ -18,6 +19,13 @@ from core import utils
 import logging
 from core.context import correlation_id as correlation_id_ctx, fiqh_status_queue
 from core.sentry import record_cache_metrics_breadcrumb
+from core.token_telemetry import (
+    StreamUsageTracker,
+    reset_usage_accumulator,
+    restore_usage_accumulator,
+    snapshot_usage,
+    usage_totals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +89,6 @@ NODE_STATUS_MESSAGES = {
 
 # Human-readable status messages for each tool call
 TOOL_STATUS_MESSAGES = {
-    "check_if_non_islamic_tool": "Checking if query is within scope...",
     "translate_to_english_tool": "Translating your question...",
     "enhance_query_tool": "Enhancing your question...",
     "retrieve_shia_documents_tool": "Searching Shia sources...",
@@ -135,12 +142,39 @@ def _emit_cache_metrics_breadcrumb(final_state) -> None:
         n_iter = final_state.get("iterations", 0) or 0
     total = sum_creation + sum_read
     ratio = (sum_read / total) if total > 0 else 0.0  # D-06 cold-cache guard
+    # Token-cost Phase 0: attach per-turn totals + per-site map when the
+    # request accumulator recorded real usage. Stub-driven runs record nothing,
+    # keeping the D-08 four-key breadcrumb shape intact for existing tests.
+    per_site = snapshot_usage()
+    extra_kwargs = {}
+    if per_site:
+        totals = usage_totals(per_site)
+        extra_kwargs = {
+            "input_tokens_total": totals["input_tokens"],
+            "output_tokens_total": totals["output_tokens"],
+            "usage_by_site": per_site,
+        }
     record_cache_metrics_breadcrumb(
         cache_efficiency_ratio=ratio,
         cache_read_tokens=sum_read,
         cache_creation_tokens=sum_creation,
         iterations=n_iter,
+        **extra_kwargs,
     )
+
+
+def _maybe_usage_sse() -> Optional[str]:
+    """Debug-gated `usage` SSE event for scripts/token_bench.py.
+
+    Emitted just before `done` only when TOKEN_BENCH_DEBUG=1, so the default
+    SSE event-type contract (tests/test_sse_event_order_snapshot.py) is
+    untouched in production and CI. Advisory event: clients ignore unknown
+    event types per the sse_event() contract note.
+    """
+    if os.getenv("TOKEN_BENCH_DEBUG") != "1":
+        return None
+    per_site = snapshot_usage()
+    return sse_event("usage", {"by_site": per_site, "totals": usage_totals(per_site)})
 
 
 async def chat_pipeline_streaming_agentic(
@@ -173,6 +207,10 @@ async def chat_pipeline_streaming_agentic(
     async def response_generator() -> AsyncGenerator[str, None]:
         assistant_text = ""
         history_written = False
+        # Initialized before the try so the except handler can safely reference
+        # it when the producer fails before the post-loop assignment (previously
+        # an UnboundLocalError path).
+        final_state = None
 
         # Producer/consumer multiplex: agent.astream events AND fiqh sub-graph
         # real-time status events (pushed via the fiqh_status_queue contextvar
@@ -183,6 +221,11 @@ async def chat_pipeline_streaming_agentic(
         # completion. See .planning/quick/260509-3cd-realtime-fiqh-sse-status-events/.
         output_queue: asyncio.Queue = asyncio.Queue()
         queue_token = fiqh_status_queue.set(output_queue)
+        # Token-cost Phase 0: fresh per-request usage accumulator. Must be set
+        # BEFORE the producer task is created — asyncio.create_task copies the
+        # current context, so the producer (which drives all node LLM calls)
+        # shares this accumulator dict.
+        usage_token = reset_usage_accumulator()
 
         # Mutable boxes for closure-shared state (producer task writes;
         # consumer + post-loop body read).
@@ -221,7 +264,28 @@ async def chat_pipeline_streaming_agentic(
                 ):
                     for node_name, node_state in event.items():
                         logger.debug("Node traversal", extra={"correlation_id": correlation_id_ctx.get(), "node": node_name})
-                        state_box["final_state"] = node_state
+                        # Merge node deltas instead of overwriting. astream
+                        # (updates mode) yields {node: delta}; nodes that
+                        # return partial dicts (fiqh_classification,
+                        # fiqh_subgraph, generate_fiqh_response) would
+                        # otherwise clobber earlier keys — which made the
+                        # fiqh streaming branch below unreachable in
+                        # production (final_state lost `fiqh_category`, so
+                        # fiqh answers fell into the final_response
+                        # short-circuit: no token streaming, no
+                        # fiqh_references event). Verified live in the
+                        # phase-0 bench (token-cost DEE-60).
+                        if isinstance(node_state, dict):
+                            if isinstance(state_box["final_state"], dict):
+                                state_box["final_state"].update(node_state)
+                            else:
+                                state_box["final_state"] = dict(node_state)
+                        elif node_state is not None:
+                            state_box["final_state"] = node_state
+                        # node_state is None when a node returns an empty
+                        # update (e.g. the streaming-guarded
+                        # generate_fiqh_response) — never let it clobber
+                        # the accumulated state.
 
                         # Node-arrival status. Skip 'fiqh_subgraph' here: the
                         # keep-alive message is now pushed via the contextvar
@@ -342,6 +406,9 @@ async def chat_pipeline_streaming_agentic(
             if final_state is None:
                 yield sse_event("error", {"message": "No response generated."})
                 _emit_cache_metrics_breadcrumb(final_state)
+                usage_evt = _maybe_usage_sse()
+                if usage_evt:
+                    yield usage_evt
                 yield sse_event("done", {})
                 return
 
@@ -361,6 +428,9 @@ async def chat_pipeline_streaming_agentic(
                 )
                 history_written = True
                 _emit_cache_metrics_breadcrumb(final_state)
+                usage_evt = _maybe_usage_sse()
+                if usage_evt:
+                    yield usage_evt
                 yield sse_event("done", {})
                 return
 
@@ -415,18 +485,25 @@ async def chat_pipeline_streaming_agentic(
                         evidence=_format_evidence(fiqh_docs),
                     )
                     response_tokens = []
+                    usage_tracker = StreamUsageTracker("fiqh_generation_stream")
                     async for chunk in model.astream(fiqh_messages):
+                        usage_tracker.feed(chunk)
                         token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                         if token:
                             response_tokens.append(token)
                             yield sse_event("response_chunk", {"token": token})
+                    usage_tracker.commit()
 
                     answer_text = "".join(response_tokens).strip()
 
-                    # Post-process: append ## Sources, optional insufficient warning, fatwa disclaimer
+                    # Post-process: append ## Sources, optional insufficient warning,
+                    # fatwa disclaimer. assistant_text is assembled in the SAME
+                    # order the chunks are streamed, so a session reloaded from
+                    # history reads identically to the live stream (review fix).
                     references_section = _build_references_section(answer_text, fiqh_docs)
                     if references_section:
                         yield sse_event("response_chunk", {"token": references_section})
+                        answer_text += references_section
 
                     if not is_sufficient:
                         yield sse_event("response_chunk", {"token": INSUFFICIENT_WARNING})
@@ -434,8 +511,6 @@ async def chat_pipeline_streaming_agentic(
 
                     yield sse_event("response_chunk", {"token": FATWA_DISCLAIMER})
                     answer_text += FATWA_DISCLAIMER
-                    if references_section:
-                        answer_text += references_section
 
                     assistant_text = answer_text
                     yield sse_event("response_end", {})
@@ -474,7 +549,14 @@ async def chat_pipeline_streaming_agentic(
 
                         references = utils.compact_format_references(all_docs)
                         chat_model = chat_models.get_generator_model()
-                        history_messages = await amake_history(runtime_session_id).aget_messages()
+                        from core.history_budget import GENERATION_BUDGET, budget_messages
+                        from services.summary_service import prepend_summary_if_truncated
+                        full_history = await amake_history(runtime_session_id).aget_messages()
+                        history_messages = await prepend_summary_if_truncated(
+                            runtime_session_id,
+                            full_history,
+                            budget_messages(full_history, *GENERATION_BUDGET),
+                        )
                         messages = prompt_templates.generator_messages(
                             query=user_query,
                             references=references,
@@ -483,11 +565,14 @@ async def chat_pipeline_streaming_agentic(
                         )
 
                         response_tokens = []
+                        usage_tracker = StreamUsageTracker("generation_stream")
                         async for chunk in chat_model.astream(messages):
+                            usage_tracker.feed(chunk)
                             token = getattr(chunk, "content", str(chunk) if chunk is not None else "")
                             if token:
                                 response_tokens.append(token)
                                 yield sse_event("response_chunk", {"token": token})
+                        usage_tracker.commit()
 
                         assistant_text = "".join(response_tokens).strip()
                         yield sse_event("response_end", {})
@@ -521,6 +606,9 @@ async def chat_pipeline_streaming_agentic(
                     yield sse_event("quran_references", {"references": quran_json})
 
             _emit_cache_metrics_breadcrumb(final_state)
+            usage_evt = _maybe_usage_sse()
+            if usage_evt:
+                yield usage_evt
             yield sse_event("done", {})
 
         except asyncio.CancelledError:
@@ -571,6 +659,9 @@ async def chat_pipeline_streaming_agentic(
             else:
                 yield sse_event("error", {"message": "An error occurred. Please try again."})
             _emit_cache_metrics_breadcrumb(final_state)
+            usage_evt = _maybe_usage_sse()
+            if usage_evt:
+                yield usage_evt
             yield sse_event("done", {})
         finally:
             # Always release the contextvar so a later request on this asyncio
@@ -582,6 +673,7 @@ async def chat_pipeline_streaming_agentic(
                 fiqh_status_queue.reset(queue_token)
             except Exception:
                 pass
+            restore_usage_accumulator(usage_token)
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 
@@ -613,12 +705,19 @@ async def chat_pipeline_agentic(
     agent_config = config or DEFAULT_AGENT_CONFIG
     agent = ChatAgent(agent_config)
 
-    final_state = await agent.ainvoke(
-        user_query=user_query,
-        session_id=session_id,
-        target_language=target_language,
-        config=agent_config.to_dict()
-    )
+    # Token-cost Phase 0: request-scoped usage accumulator (parity with the
+    # streaming path; keeps recordings from leaking across requests).
+    usage_token = reset_usage_accumulator()
+    try:
+        final_state = await agent.ainvoke(
+            user_query=user_query,
+            session_id=session_id,
+            target_language=target_language,
+            config=agent_config.to_dict()
+        )
+    finally:
+        token_usage_by_site = snapshot_usage()
+        restore_usage_accumulator(usage_token)
 
     response_data = {
         "response": final_state.get("final_response", "Unable to generate response"),
@@ -635,5 +734,7 @@ async def chat_pipeline_agentic(
             "errors": final_state.get("errors", [])
         }
     }
+    if token_usage_by_site:
+        response_data["metadata"]["token_usage_by_site"] = token_usage_by_site
 
     return response_data

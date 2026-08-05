@@ -23,6 +23,12 @@ class FiqhState(TypedDict):
     prior_queries: List[str]
     """All retrieval queries tried (original + refinements). Fed to refiner to avoid repetition."""
 
+    pending_queries: List[str]
+    """Fresh sub-queries produced by the latest decompose/refine round, consumed
+    (and cleared) by the next retrieve. Token-cost DEE-60 Phase 4: lets the
+    retriever skip its internal re-decomposition and actually use the
+    decomposer's full output instead of only prior_queries[-1]."""
+
     sea_result: Optional[object]
     """Latest SEAResult from assess node. None before first assess call."""
 

@@ -147,10 +147,10 @@ async def chat_pipeline_agentic_ep(
             "sunni_doc_count": 2
           },
           "model": {
-            "agent_model": "gpt-4o",
+            "agent_model": "claude-sonnet-4-6",
             "temperature": 0.7
           },
-          "max_iterations": 15
+          "max_iterations": 3
         }
       }
     

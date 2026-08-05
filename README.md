@@ -203,7 +203,7 @@ agents/core/chat_agent.ChatAgent.astream()    (LangGraph, all nodes async)
   │
   ▼
 SSE events: status, response_chunk, response_end, hadith_references,
-            quran_references, done
+            quran_references, fiqh_references, done
   │
   ▼
 chat_persistence_service.wrap_streaming_response_for_persistence()
@@ -228,6 +228,21 @@ The migration shipped across phases DEE-39 through DEE-46. Concurrency benchmark
 What's still synchronous (deliberately):
 - Routers other than `chat.*` — primer, lessons, hikmah, onboarding, account, memory_admin — keep `Depends(get_db)`. Each migrates atomically in its own DEE-45 follow-up sub-issue.
 - Alembic migrations stay on the sync engine (recommended; SQLAlchemy async migrations are still rough).
+
+### Token-cost architecture (DEE-60 — closed)
+
+Input-token spend on the agentic path was cut **~56% per answer (−83% raw input tokens)** with answer quality blind-judged equal-or-better at every step. Full narrative: [`documentation/DEE-60-token-cost-changes.md`](documentation/DEE-60-token-cost-changes.md); raw per-phase bench snapshots: [`documentation/token_baseline.md`](documentation/token_baseline.md).
+
+| Phase | What it changed | Kill-switch (env, default on) |
+|-------|-----------------|-------------------------------|
+| 0 | Per-call-site token telemetry (`core/token_telemetry.py`) + 32-question live bench with blind A/B judge (`scripts/token_bench.py`) | — |
+| 1 | Fiqh streaming + `fiqh_references` restoration; redundant classifier tool unbound; doc-count clamps; `max_iterations` 3; prompt trims | — |
+| 2 | Payload diet: metadata whitelists (compressed blobs eliminated), compact planner ToolMessages, read-side history budgets | `TOOLMSG_COMPACT`, `HISTORY_BUDGETS` |
+| 3 | Prompt-cache architecture: append-only agent loop (system every iteration, rolling breakpoints), cache-aware generator prompt | `AGENT_CACHE_V2` |
+| 4 | Fiqh: single decompose per query (all sub-queries now retrieve), ≤30-doc filter cap, retries 18 → 6 | `FIQH_V2_RETRIEVAL` |
+| 5 | Long-chat background Haiku summaries past the history budget | `HISTORY_SUMMARY` |
+
+Bench anytime: start the server with `TOKEN_BENCH_DEBUG=1`, then `python scripts/token_bench.py --label <name>`; compare quality with `python scripts/token_bench.py --judge phase-4 <name>`.
 
 For the deeper component breakdown, see [Architecture Documentation](documentation/ARCHITECTURE.md), [AI Pipeline](documentation/AI_PIPELINE.md), and [Chatbot](documentation/CHATBOT.md).
 

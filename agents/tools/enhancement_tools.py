@@ -16,37 +16,16 @@ logger = logging.getLogger(__name__)
 @tool
 async def enhance_query_tool(query: str, session_id: str) -> Dict[str, str]:
     """
-    Enhance a user's query by adding context and improving it for better document retrieval.
-
-    Use this tool to improve the quality of queries before retrieving documents from the database.
-    The enhancement process:
-    - Adds relevant context from chat history
-    - Expands abbreviations and clarifies ambiguous terms
-    - Reformulates the query to be more specific and retrieval-friendly
-    - Preserves the original intent while making it more searchable
+    Rewrite the query into a better retrieval query using chat history
+    (resolves pronouns/follow-ups, e.g. "tell me more about him" ->
+    "Imam Ali, the first Imam in Shia Islam").
 
     Args:
-        query: The user's original query
-        session_id: The conversation session ID to access chat history for context
+        query: The user's original query.
+        session_id: Conversation session ID (for chat-history context).
 
-    Returns:
-        Dictionary with:
-        - enhanced_query (str): The improved, context-enriched query
-        - original_query (str): The original user query
-
-    Example:
-        Original: "Tell me more about him"
-        Enhanced: "Tell me more about Imam Ali, the first Imam in Shia Islam"
-
-    When to use:
-    - Before retrieving documents from the knowledge base
-    - When the query is short or lacks context
-    - When chat history provides relevant context
-
-    When NOT to use:
-    - For very simple, self-contained queries
-    - When the query is already detailed and specific
-    - After classification determines the query is non-Islamic or fiqh
+    When to use: follow-ups, ambiguous or pronoun-heavy queries.
+    When NOT to use: direct, self-contained questions.
     """
     try:
         enhanced = await enhancer.aenhance_query(query, session_id)

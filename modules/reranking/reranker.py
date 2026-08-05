@@ -10,6 +10,36 @@ logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)  # or DEBUG while debugging
 
+# Token-cost DEE-60 Phase 2: the raw Pinecone metadata carries gzip+base64
+# duplicates of the text (text_en on sparse hits, text_ar always) that no
+# downstream consumer reads after decompression — but they were serialized
+# into ToolMessages and re-sent to the LLM on every agent iteration. The
+# whitelist is the union of every field read by core/utils.py formatters
+# and the frontend reference JSON.
+HADITH_METADATA_WHITELIST = (
+    "author",
+    "volume",
+    "book_number",
+    "book_title",
+    "chapter_number",
+    "chapter_title",
+    "collection",
+    "grade_ar",
+    "grade_en",
+    "hadith_id",
+    "hadith_no",
+    "hadith_url",
+    "lang",
+    "sect",
+    "reference",
+)
+
+
+def _whitelist_metadata(md: dict) -> dict:
+    if not isinstance(md, dict):
+        return {}
+    return {k: md[k] for k in HADITH_METADATA_WHITELIST if k in md}
+
 def rerank_documents(dense_results, sparse_results, no_of_docs):
     """
     Merges and reranks documents based on their dense and sparse scores.
@@ -125,11 +155,12 @@ def rerank_documents(dense_results, sparse_results, no_of_docs):
         logger.info("[RERANK] returning top=%d (requested %d). Top IDs=%s",
                     len(top), no_of_docs, [k for k, _ in top])
 
-        # return top no_of_docs from the sorted results
+        # return top no_of_docs from the sorted results (metadata whitelisted —
+        # compressed text blobs never leave this module)
         return [
             {
                 "hadith_id": hadith_id,
-                "metadata": data["metadata"],
+                "metadata": _whitelist_metadata(data["metadata"]),
                 "page_content_en": data["page_content_en"],
                 "page_content_ar": data["page_content_ar"]
             }

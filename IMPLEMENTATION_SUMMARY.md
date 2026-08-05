@@ -66,32 +66,29 @@ Each tool has:
 **Three-Level Configuration:**
 
 ```python
-# Retrieval Configuration
+# Retrieval Configuration (doc counts are clamped at runtime: shia 1-10, sunni 0-5, quran 0-5)
 RetrievalConfig(
     shia_doc_count=5,
     sunni_doc_count=2,
-    reranking_enabled=True,
-    dense_weight=0.8,
-    sparse_weight=0.2
+    quran_doc_count=3,
 )
 
 # Model Configuration
 ModelConfig(
-    agent_model="gpt-4o",
+    agent_model="claude-sonnet-4-6",  # LARGE_LLM from environment
     temperature=0.7,
-    max_tokens=None
+    max_tokens=4096,
 )
 
 # Agent Configuration
 AgentConfig(
     retrieval=RetrievalConfig(),
     model=ModelConfig(),
-    max_iterations=15,
-    enable_classification=True,
-    enable_translation=True,
-    enable_enhancement=True,
-    stream_intermediate_steps=False
+    max_iterations=3,  # le=10
 )
+# Note (DEE-60): reranking_enabled / dense_weight / sparse_weight and the
+# enable_* / stream_intermediate_steps flags were removed — they were never
+# read by any code path. Clients still sending them are ignored by pydantic.
 ```
 
 ### 4. State Management
