@@ -19,7 +19,11 @@ from langchain_core.messages import AIMessage, BaseMessage
 
 # Per-call-site budgets: (max_messages, max_total_chars). Central so tuning
 # happens in one place; validated by the token bench's multi-turn slice.
-GENERATION_BUDGET = (10, 8000)
+# GENERATION char cap raised 8000 -> 12000 after live testing: answers run
+# 5-11k chars, so 8000 collapsed the window to ~1 message and made the
+# summary carry nearly all context. 12000 keeps ~2 recent turns verbatim;
+# with AGENT_CACHE_V2 the extra history reads at the 0.1x cached rate.
+GENERATION_BUDGET = (10, 12000)
 AGENT_BUDGET = (10, 8000)
 ENHANCER_BUDGET = (6, 4000)
 CLASSIFIER_MAX_MESSAGES = 4

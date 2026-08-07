@@ -6,6 +6,11 @@ services:
       - .env
     expose:
       - "8000"
+    # Loopback-only publish so the host (deploy workflow health gate, box-local
+    # curl) can reach /health directly. NOT internet-exposed — Caddy remains
+    # the public entrypoint on :80/:443.
+    ports:
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
   caddy:

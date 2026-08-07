@@ -82,15 +82,21 @@ jobs:
             docker compose build
           fi
 
+      - name: Run database migrations
+        # Runs alembic in a throwaway container from the freshly built image
+        # BEFORE the new app version starts serving — new code must never race
+        # a missing table (e.g. DEE-67's reference_translations).
+        run: docker compose run --rm api alembic upgrade head
+
       - name: Restart service
         run: |
           docker compose down
           docker compose up -d
 
       - name: Wait for /health (60s budget)
-        # Polls the in-container health endpoint via the host's loopback
-        # because docker-compose.yml maps :8000 (Caddy fronts HTTPS but is
-        # in a separate container). 30 attempts × 2s = 60s budget covers
+        # Polls the health endpoint via the host loopback — docker-compose.yml
+        # publishes 127.0.0.1:8000:8000 (loopback-only; Caddy fronts public
+        # HTTPS in its own container). 30 attempts × 2s = 60s budget covers
         # cold-start of the sentence-transformers model.
         run: |
           for i in $(seq 1 30); do
