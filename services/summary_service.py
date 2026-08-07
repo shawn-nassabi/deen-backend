@@ -92,10 +92,15 @@ async def refresh_session_summary(session_id: str) -> None:
         # REDIS_MAX_MESSAGES the length is constant (a length-modulo gate
         # would then fire every turn — review finding 1), and odd-length
         # histories after a failed stream would never fire (finding 2).
+        # Exception: when no summary exists yet, write one immediately — the
+        # first crossing lands on an odd count, and skipping it leaves the very
+        # next turn reading budget-truncated history with no summary at all
+        # (live finding: turn 7 of a 7-turn chat denied knowing turn 1).
         client = memory._get_async_redis()
         turn_count = await client.incr(_turn_counter_key(session_id))
         await client.expire(_turn_counter_key(session_id), memory.TTL_SECONDS)
-        if turn_count % 2 != 0:
+        has_summary = await client.exists(_summary_key(session_id))
+        if has_summary and turn_count % 2 != 0:
             return
 
         older = messages[:-SUMMARY_KEEP_RECENT]

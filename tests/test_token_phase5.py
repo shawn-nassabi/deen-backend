@@ -39,6 +39,9 @@ class _FakeRedis:
     async def expire(self, key, ttl):
         return True
 
+    async def exists(self, key):
+        return 1 if key in self.store else 0
+
 
 class _FakeHistory:
     def __init__(self, messages):
@@ -100,17 +103,31 @@ def test_refresh_summarizes_older_turns_and_stores(monkeypatch):
 def test_refresh_cadence_every_second_turn_even_at_history_cap(monkeypatch):
     """The cadence gate uses a Redis turn counter, NOT history length — at the
     30-message trim cap the length is constant, and a length-modulo gate would
-    degenerate to refreshing every turn (review finding 1)."""
+    degenerate to refreshing every turn (review finding 1). The FIRST crossing
+    writes immediately regardless of parity (first-need fix); after that the
+    every-second-turn cadence applies."""
     monkeypatch.delenv("HISTORY_SUMMARY", raising=False)
     fake_redis, calls = _patch_env(monkeypatch, _turns(15))  # 30 msgs == the cap
-    _run(summary_service.refresh_session_summary("s1"))  # turn 1 -> skip
-    assert calls == []
-    _run(summary_service.refresh_session_summary("s1"))  # turn 2 -> refresh
+    _run(summary_service.refresh_session_summary("s1"))  # turn 1, no summary yet -> write now
     assert len(calls) == 1
-    _run(summary_service.refresh_session_summary("s1"))  # turn 3 -> skip
-    assert len(calls) == 1
-    _run(summary_service.refresh_session_summary("s1"))  # turn 4 -> refresh
+    _run(summary_service.refresh_session_summary("s1"))  # turn 2 (even) -> refresh
     assert len(calls) == 2
+    _run(summary_service.refresh_session_summary("s1"))  # turn 3 (odd, summary exists) -> skip
+    assert len(calls) == 2
+    _run(summary_service.refresh_session_summary("s1"))  # turn 4 (even) -> refresh
+    assert len(calls) == 3
+
+
+def test_first_crossing_writes_summary_immediately(monkeypatch):
+    """Regression for the live first-need gap: history first exceeds the
+    trigger after turn 6 (12 msgs, counter=1, odd). The old parity-only gate
+    skipped it, so turn 7 read budget-truncated history with NO summary and
+    denied knowing turn 1. The first crossing must write the summary now."""
+    monkeypatch.delenv("HISTORY_SUMMARY", raising=False)
+    fake_redis, calls = _patch_env(monkeypatch, _turns(6))  # 12 msgs > trigger
+    _run(summary_service.refresh_session_summary("s1"))
+    assert len(calls) == 1
+    assert summary_service._summary_key("s1") in fake_redis.store
 
 
 def test_kill_switch_disables_everything(monkeypatch):

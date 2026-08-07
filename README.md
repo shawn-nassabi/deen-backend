@@ -486,19 +486,36 @@ cd ~/deen-backend
 # 3. Pull latest code
 git pull
 
-# 4. Rebuild and restart containers
+# 4. Rebuild
 docker compose down
 docker compose build --no-cache
+
+# 5. Run database migrations BEFORE starting the new version — new code must
+#    never race a missing table (e.g. DEE-67's reference_translations)
+docker compose run --rm api alembic upgrade head
+
+# 6. Start
 docker compose up -d
 
-# 5. Run database migrations (if any new ones)
-docker exec -it deen-backend alembic upgrade head
-
-# 6. Verify deployment
+# 7. Verify deployment
 docker ps                                              # containers running?
 docker logs --tail=50 deen-backend                     # no startup errors?
-curl https://api.thedeenfoundation.com/health          # responding?
+curl http://127.0.0.1:8000/health                      # container healthy (loopback publish)?
+curl https://api.thedeenfoundation.com/health          # responding via Caddy?
 ```
+
+**Connection-budget invariant (DEE-59):** the Dockerfile's gunicorn `-w 2` is
+coupled to the SQLAlchemy pool caps — per worker, sync (2+1) + async (2+1) = 6
+pooled connections, so 2 workers = 12 of the 15-client Supabase session-mode
+cap. If you change the worker count, recompute the pool sizes in
+`db/session.py` and `db/async_session.py` first, or production will hit
+`EMAXCONNSESSION` pooler-exhaustion errors again.
+
+**Feature rollback (DEE-60 kill switches):** the token-cost phases can each be
+reverted without a redeploy by adding the matching flag to `.env` with value
+`0` (`TOOLMSG_COMPACT`, `HISTORY_BUDGETS`, `AGENT_CACHE_V2`,
+`FIQH_V2_RETRIEVAL`, `HISTORY_SUMMARY`) and recreating the container
+(see below — `restart` alone will not pick up `.env` changes).
 
 ### Quick Reference Commands
 
@@ -508,7 +525,11 @@ docker logs -f deen-backend              # follow live logs
 docker logs --tail=200 deen-backend      # last 200 lines
 docker logs --tail=100 deen-caddy        # Caddy/TLS logs
 
-# Restart without rebuilding (e.g. .env change only)
+# Apply a .env change without rebuilding — the container must be RECREATED;
+# `docker compose restart` reuses the old environment and will NOT pick it up
+docker compose up -d --force-recreate api
+
+# Restart without rebuilding (process bounce only — does NOT re-read .env)
 docker compose restart
 
 # Full clean rebuild (if disk is tight)

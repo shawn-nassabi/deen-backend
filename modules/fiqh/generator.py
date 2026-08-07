@@ -42,7 +42,8 @@ STRICT RULES:
 - You MUST use at least one [n] citation in your response
 - Write in a clear, respectful tone appropriate for a religious legal question
 - Do NOT issue fatwas — present what Sistani's published rulings state
-- Do NOT speculate beyond what the evidence states"""
+- Do NOT speculate beyond what the evidence states
+- Never format content as a markdown table — tables do not render in the app; use headings and numbered lists instead"""
 
 def _build_messages(query: str, evidence: str) -> list:
     return [
