@@ -107,16 +107,14 @@ from agents.config.agent_config import AgentConfig, RetrievalConfig
 # Create custom configuration
 config = AgentConfig(
     retrieval=RetrievalConfig(
-        shia_doc_count=7,      # Retrieve 7 Shia documents
-        sunni_doc_count=3      # Retrieve 3 Sunni documents
+        shia_doc_count=7,      # Retrieve 7 Shia documents (clamped 1-10 at runtime)
+        sunni_doc_count=3      # Retrieve 3 Sunni documents (clamped 0-5 at runtime)
     ),
     model=ModelConfig(
         agent_model="claude-sonnet-4-6",  # Or use LARGE_LLM from environment
         temperature=0.7
     ),
-    max_iterations=5,
-    enable_classification=True,
-    enable_enhancement=True
+    max_iterations=3,
 )
 
 response = await chat_pipeline_streaming_agentic(
@@ -186,11 +184,13 @@ Response:
 
 ```python
 class RetrievalConfig(BaseModel):
-    shia_doc_count: int = 5           # Number of Shia documents (1-20)
-    sunni_doc_count: int = 2          # Number of Sunni documents (0-20)
-    reranking_enabled: bool = True    # Use hybrid reranking
-    dense_weight: float = 0.8         # Weight for dense retrieval
-    sparse_weight: float = 0.2        # Weight for sparse retrieval
+    shia_doc_count: int = 5           # Number of Shia documents (clamped 1-10 at runtime)
+    sunni_doc_count: int = 2          # Number of Sunni documents (clamped 0-5 at runtime)
+    quran_doc_count: int = 3          # Number of Quran/Tafsir documents (clamped 0-5)
+    # reranking_enabled / dense_weight / sparse_weight were removed in DEE-60:
+    # they were never read (the reranker uses DENSE_RESULT_WEIGHT /
+    # SPARSE_RESULT_WEIGHT from core.config). Clients still sending them are
+    # ignored by pydantic.
 ```
 
 ### ModelConfig
@@ -208,11 +208,10 @@ class ModelConfig(BaseModel):
 class AgentConfig(BaseModel):
     retrieval: RetrievalConfig        # Retrieval settings
     model: ModelConfig                # Model settings
-    max_iterations: int = 5           # Max agent iterations
-    enable_classification: bool = True
-    enable_translation: bool = True
-    enable_enhancement: bool = True
-    stream_intermediate_steps: bool = False
+    max_iterations: int = 3           # Max agent iterations (le=10)
+    # enable_classification / enable_translation / enable_enhancement /
+    # stream_intermediate_steps were removed in DEE-60 (defined since v1 but
+    # never read by any code path). Clients still sending them are ignored.
 ```
 
 ## How the Agent Makes Decisions

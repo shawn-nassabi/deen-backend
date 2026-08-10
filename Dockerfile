@@ -25,6 +25,14 @@ USER appuser
 # Expose internal app port
 EXPOSE 8000
 
-# Start Gunicorn with Uvicorn workers
-# Replace "app.main:app" with your module:app path
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "-b", "0.0.0.0:8000", "main:app"]
+# Start Gunicorn with Uvicorn workers (async ASGI — required by the DEE-36
+# end-to-end async pipeline; plain sync gunicorn workers would break it).
+# DEE-59: `-w 2` is load-bearing for the DB connection budget — each worker
+# opens sync (2+1) + async (2+1) = 6 pooled connections; 2 workers = 12 of the
+# 15-client Supabase session-mode cap. Recompute db/session.py +
+# db/async_session.py pool sizes BEFORE changing the worker count.
+# --timeout 180 (DEE-36 follow-up): for async UvicornWorkers this is a
+# liveness-heartbeat window, not a per-request clock — long SSE streams are
+# safe either way; 180s stops brief event-loop stalls under load from being
+# misread as a wedged worker and killed mid-stream.
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "--timeout", "180", "-b", "0.0.0.0:8000", "main:app"]

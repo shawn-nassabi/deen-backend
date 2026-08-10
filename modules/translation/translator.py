@@ -52,6 +52,9 @@ async def atranslate_to_english(text: str, source_language: str | None = None) -
 
     try:
         response = await _atranslate_to_english_call(text, source_language)
+        from core.token_telemetry import record_llm_usage
+
+        record_llm_usage("translator", response)
         out = (getattr(response, "content", None) or "").strip()
         return out or text
     except Exception:

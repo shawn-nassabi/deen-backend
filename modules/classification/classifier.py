@@ -2,6 +2,7 @@ from modules.context import context
 from core import chat_models
 from core import prompt_templates
 from core.resilience import anthropic_retry
+from core.token_telemetry import record_llm_usage
 
 
 def classify_fiqh_query(query: str, session_id: str = None) -> bool:
@@ -78,4 +79,32 @@ async def aclassify_non_islamic_query(query: str, session_id: str = None) -> boo
 
     messages = prompt_templates.nonislamic_classifier_messages(query=query, chatContext=chatContext)
     response = await _aclassify_non_islamic_query_call(messages)
+    record_llm_usage("non_islamic_classifier_tool", response)
     return "true" in response.content.strip().lower()
+
+
+@anthropic_retry
+async def _aclassify_intent_call(messages):
+    chat_model = chat_models.get_classifier_model()
+    return await chat_model.ainvoke(messages)
+
+
+async def aclassify_intent(query: str, session_id: str = None) -> str:
+    """3-label intent classifier for the agentic path.
+
+    Returns one of: 'islamic', 'non_islamic', 'casual'.
+    Does NOT replace the bool aclassify_non_islamic_query (still used by core/pipeline.py).
+    Uses recent conversation context if session_id is provided.
+    """
+    chatContext = ""
+    if session_id:
+        chatContext = context.get_recent_context(session_id)
+
+    messages = prompt_templates.intent_classifier_messages(query=query, chatContext=chatContext)
+    response = await _aclassify_intent_call(messages)
+    record_llm_usage("intent_classifier", response)
+    label = response.content.strip().lower()
+    if label in ("islamic", "non_islamic", "casual"):
+        return label
+    # Fallback: if LLM returns unexpected output, treat as islamic to avoid over-refusal
+    return "islamic"

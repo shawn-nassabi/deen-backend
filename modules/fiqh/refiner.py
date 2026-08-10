@@ -135,6 +135,9 @@ async def arefine_query(
         prior_queries = []
     try:
         response = await _arefine_query_call(original_query, sea_result, prior_queries)
+        from core.token_telemetry import record_llm_usage
+
+        record_llm_usage("fiqh_refiner", response)
         return _parse_refinements(response.content.strip(), original_query)
     except Exception:
         logger.error(

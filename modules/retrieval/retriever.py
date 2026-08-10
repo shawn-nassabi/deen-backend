@@ -91,6 +91,32 @@ def retrieve_sunni_documents(query, no_of_docs=10):
         return []
 
 
+# Token-cost DEE-60 Phase 2: whitelist of Quran/Tafsir metadata fields — the
+# union of everything read by core/utils.py formatters, the frontend
+# quran_references JSON, and the _is_quran_doc grouping check ("Type").
+# Drops the gzip+base64 duplicates (text_chunk, english_quran_translation)
+# that already exist decompressed as top-level doc fields.
+QURAN_METADATA_WHITELIST = (
+    "surah_name",
+    "title",
+    "chapter_number",
+    "verses_covered",
+    "starting_verse",
+    "ending_verse",
+    "author",
+    "collection",
+    "volume",
+    "sect",
+    "Type",
+)
+
+
+def _whitelist_quran_metadata(md: dict) -> dict:
+    if not isinstance(md, dict):
+        return {}
+    return {k: md[k] for k in QURAN_METADATA_WHITELIST if k in md}
+
+
 def retrieve_quran_documents(query, no_of_docs=5):
     """
     Retrieve Quran Tafsir documents from the dedicated dense-only Pinecone index.
@@ -115,7 +141,7 @@ def retrieve_quran_documents(query, no_of_docs=5):
             quran_translation = decompress_text(md.get("english_quran_translation", ""))
             docs.append({
                 "chunk_id": match.id,
-                "metadata": md,
+                "metadata": _whitelist_quran_metadata(md),
                 "page_content_en": text_chunk,
                 "quran_translation": quran_translation,
             })
@@ -215,7 +241,7 @@ async def aretrieve_quran_documents(query, no_of_docs=5):
             quran_translation = decompress_text(md.get("english_quran_translation", ""))
             docs.append({
                 "chunk_id": match.id,
-                "metadata": md,
+                "metadata": _whitelist_quran_metadata(md),
                 "page_content_en": text_chunk,
                 "quran_translation": quran_translation,
             })

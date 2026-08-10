@@ -85,10 +85,14 @@ def chat_pipeline_streaming(user_query: str, session_id: str, target_language: s
 
 
 
-async def references_pipeline(user_query: str, sect: str, limit: int = REFERENCE_FETCH_COUNT):
+async def references_pipeline(user_query: str, sect: str, limit: int = REFERENCE_FETCH_COUNT, language: str = "english"):
     """Async references pipeline (DEE-44). Uses native `aclassify_*`,
     `aenhance_query`, and `aretrieve_*` so the route doesn't block the event
-    loop on classification → enhancement → retrieval → ranking."""
+    loop on classification → enhancement → retrieval → ranking.
+
+    `language` (DEE-67) threads through to `utils.aformat_references_as_json`,
+    which joins in a selected-language translation from the Postgres sidecar
+    table -- retrieval/ranking above is unaffected."""
     is_non_islamic = await classifier.aclassify_non_islamic_query(user_query)
     if is_non_islamic:
         return "This question is not related to the domain of Islamic education. Please ask relevant questions."
@@ -105,7 +109,7 @@ async def references_pipeline(user_query: str, sect: str, limit: int = REFERENCE
     # Run shia + sunni retrievals concurrently when both are requested.
     fetched = await asyncio.gather(*[fut for _, fut in fetches])
     for (label, _), docs in zip(fetches, fetched):
-        results[label] = utils.format_references_as_json(docs)
+        results[label] = await utils.aformat_references_as_json(docs, language)
 
     return results
 

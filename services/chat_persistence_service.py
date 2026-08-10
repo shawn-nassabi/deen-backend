@@ -279,6 +279,14 @@ async def aappend_turn_to_runtime_history(
         ]
     )
     await atrim_history(history)
+    # Token-cost DEE-60 Phase 5: refresh the long-chat summary in the
+    # background (fire-and-forget — no user-facing latency; best-effort).
+    try:
+        from services.summary_service import maybe_schedule_summary_refresh
+
+        maybe_schedule_summary_refresh(runtime_session_id)
+    except Exception:  # noqa: BLE001 - summary must never break persistence
+        pass
 
 
 async def list_sessions(

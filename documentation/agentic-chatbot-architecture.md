@@ -581,32 +581,23 @@ Defined config groups:
 - `retrieval`
 - `model`
 - `max_iterations`
-- `enable_classification`
-- `enable_translation`
-- `enable_enhancement`
-- `stream_intermediate_steps`
 
 ### What is actually used today
 
-The current code actively uses:
+The current code actively uses (and this is the complete field set as of DEE-60):
 
 - `model.agent_model`
 - `model.temperature`
 - `model.max_tokens`
-- `max_iterations`
-- `retrieval.shia_doc_count`
-- `retrieval.sunni_doc_count`
-- `retrieval.quran_doc_count`
+- `max_iterations` (default 3, max 10)
+- `retrieval.shia_doc_count` (clamped 1-10 at runtime)
+- `retrieval.sunni_doc_count` (clamped 0-5)
+- `retrieval.quran_doc_count` (clamped 0-5)
 
-The current code stores but does not meaningfully enforce:
-
-- `retrieval.reranking_enabled`
-- `retrieval.dense_weight`
-- `retrieval.sparse_weight`
-- `enable_classification`
-- `enable_translation`
-- `enable_enhancement`
-- `stream_intermediate_steps`
+The previously-defined-but-never-read fields (`retrieval.reranking_enabled`,
+`retrieval.dense_weight`, `retrieval.sparse_weight`, `enable_classification`,
+`enable_translation`, `enable_enhancement`, `stream_intermediate_steps`) were
+removed in DEE-60. Clients that still send them are ignored by pydantic.
 
 In other words, the config surface is broader than the actual runtime behavior.
 

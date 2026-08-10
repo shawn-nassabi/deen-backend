@@ -91,9 +91,16 @@ def classify_fiqh_query(query: str) -> str:
 
 @anthropic_retry
 async def _aclassify_fiqh_query_call(query: str) -> FiqhCategory:
+    from core.token_telemetry import UsageCallbackHandler
+
     model = chat_models.get_classifier_model()
     structured_model = model.with_structured_output(FiqhCategory)
-    return await structured_model.ainvoke(_build_messages(query))
+    # with_structured_output returns the parsed object (no response_metadata),
+    # so usage is captured via callback from the underlying generation.
+    return await structured_model.ainvoke(
+        _build_messages(query),
+        config={"callbacks": [UsageCallbackHandler("fiqh_classifier")]},
+    )
 
 
 async def aclassify_fiqh_query(query: str) -> str:

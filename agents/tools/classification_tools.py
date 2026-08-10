@@ -44,16 +44,21 @@ async def check_if_non_islamic_tool(query: str, session_id: str) -> Dict[str, an
     - "Who won the World Cup?"
     """
     try:
-        is_non_islamic = await classifier.aclassify_non_islamic_query(query, session_id)
+        label = await classifier.aclassify_intent(query, session_id)
+        is_non_islamic = label == "non_islamic"
+        is_casual = label == "casual"
 
         if is_non_islamic:
             explanation = "Query is not related to Islamic education domain"
+        elif is_casual:
+            explanation = "Query is a casual/social message"
         else:
             explanation = "Query is relevant to Islamic education"
 
         return {
             "is_non_islamic": is_non_islamic,
-            "explanation": explanation
+            "is_casual": is_casual,
+            "explanation": explanation,
         }
     except Exception as e:
         logger.error(
@@ -62,8 +67,9 @@ async def check_if_non_islamic_tool(query: str, session_id: str) -> Dict[str, an
             extra={"correlation_id": correlation_id_ctx.get()},
         )
         return {
-            "is_non_islamic": False,  # Default to allowing the query
-            "explanation": f"Classification error: {str(e)}"
+            "is_non_islamic": False,
+            "is_casual": False,
+            "explanation": f"Classification error: {str(e)}",
         }
 
 

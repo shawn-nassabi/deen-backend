@@ -203,7 +203,7 @@ agents/core/chat_agent.ChatAgent.astream()    (LangGraph, all nodes async)
   │
   ▼
 SSE events: status, response_chunk, response_end, hadith_references,
-            quran_references, done
+            quran_references, fiqh_references, done
   │
   ▼
 chat_persistence_service.wrap_streaming_response_for_persistence()
@@ -228,6 +228,21 @@ The migration shipped across phases DEE-39 through DEE-46. Concurrency benchmark
 What's still synchronous (deliberately):
 - Routers other than `chat.*` — primer, lessons, hikmah, onboarding, account, memory_admin — keep `Depends(get_db)`. Each migrates atomically in its own DEE-45 follow-up sub-issue.
 - Alembic migrations stay on the sync engine (recommended; SQLAlchemy async migrations are still rough).
+
+### Token-cost architecture (DEE-60 — closed)
+
+Input-token spend on the agentic path was cut **~56% per answer (−83% raw input tokens)** with answer quality blind-judged equal-or-better at every step. Full narrative: [`documentation/DEE-60-token-cost-changes.md`](documentation/DEE-60-token-cost-changes.md); raw per-phase bench snapshots: [`documentation/token_baseline.md`](documentation/token_baseline.md).
+
+| Phase | What it changed | Kill-switch (env, default on) |
+|-------|-----------------|-------------------------------|
+| 0 | Per-call-site token telemetry (`core/token_telemetry.py`) + 32-question live bench with blind A/B judge (`scripts/token_bench.py`) | — |
+| 1 | Fiqh streaming + `fiqh_references` restoration; redundant classifier tool unbound; doc-count clamps; `max_iterations` 3; prompt trims | — |
+| 2 | Payload diet: metadata whitelists (compressed blobs eliminated), compact planner ToolMessages, read-side history budgets | `TOOLMSG_COMPACT`, `HISTORY_BUDGETS` |
+| 3 | Prompt-cache architecture: append-only agent loop (system every iteration, rolling breakpoints), cache-aware generator prompt | `AGENT_CACHE_V2` |
+| 4 | Fiqh: single decompose per query (all sub-queries now retrieve), ≤30-doc filter cap, retries 18 → 6 | `FIQH_V2_RETRIEVAL` |
+| 5 | Long-chat background Haiku summaries past the history budget | `HISTORY_SUMMARY` |
+
+Bench anytime: start the server with `TOKEN_BENCH_DEBUG=1`, then `python scripts/token_bench.py --label <name>`; compare quality with `python scripts/token_bench.py --judge phase-4 <name>`.
 
 For the deeper component breakdown, see [Architecture Documentation](documentation/ARCHITECTURE.md), [AI Pipeline](documentation/AI_PIPELINE.md), and [Chatbot](documentation/CHATBOT.md).
 
@@ -471,19 +486,36 @@ cd ~/deen-backend
 # 3. Pull latest code
 git pull
 
-# 4. Rebuild and restart containers
+# 4. Rebuild
 docker compose down
 docker compose build --no-cache
+
+# 5. Run database migrations BEFORE starting the new version — new code must
+#    never race a missing table (e.g. DEE-67's reference_translations)
+docker compose run --rm api alembic upgrade head
+
+# 6. Start
 docker compose up -d
 
-# 5. Run database migrations (if any new ones)
-docker exec -it deen-backend alembic upgrade head
-
-# 6. Verify deployment
+# 7. Verify deployment
 docker ps                                              # containers running?
 docker logs --tail=50 deen-backend                     # no startup errors?
-curl https://api.thedeenfoundation.com/health          # responding?
+curl http://127.0.0.1:8000/health                      # container healthy (loopback publish)?
+curl https://api.thedeenfoundation.com/health          # responding via Caddy?
 ```
+
+**Connection-budget invariant (DEE-59):** the Dockerfile's gunicorn `-w 2` is
+coupled to the SQLAlchemy pool caps — per worker, sync (2+1) + async (2+1) = 6
+pooled connections, so 2 workers = 12 of the 15-client Supabase session-mode
+cap. If you change the worker count, recompute the pool sizes in
+`db/session.py` and `db/async_session.py` first, or production will hit
+`EMAXCONNSESSION` pooler-exhaustion errors again.
+
+**Feature rollback (DEE-60 kill switches):** the token-cost phases can each be
+reverted without a redeploy by adding the matching flag to `.env` with value
+`0` (`TOOLMSG_COMPACT`, `HISTORY_BUDGETS`, `AGENT_CACHE_V2`,
+`FIQH_V2_RETRIEVAL`, `HISTORY_SUMMARY`) and recreating the container
+(see below — `restart` alone will not pick up `.env` changes).
 
 ### Quick Reference Commands
 
@@ -493,7 +525,11 @@ docker logs -f deen-backend              # follow live logs
 docker logs --tail=200 deen-backend      # last 200 lines
 docker logs --tail=100 deen-caddy        # Caddy/TLS logs
 
-# Restart without rebuilding (e.g. .env change only)
+# Apply a .env change without rebuilding — the container must be RECREATED;
+# `docker compose restart` reuses the old environment and will NOT pick it up
+docker compose up -d --force-recreate api
+
+# Restart without rebuilding (process bounce only — does NOT re-read .env)
 docker compose restart
 
 # Full clean rebuild (if disk is tight)

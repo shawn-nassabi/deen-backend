@@ -42,7 +42,8 @@ STRICT RULES:
 - You MUST use at least one [n] citation in your response
 - Write in a clear, respectful tone appropriate for a religious legal question
 - Do NOT issue fatwas — present what Sistani's published rulings state
-- Do NOT speculate beyond what the evidence states"""
+- Do NOT speculate beyond what the evidence states
+- Never format content as a markdown table — tables do not render in the app; use headings and numbered lists instead"""
 
 def _build_messages(query: str, evidence: str) -> list:
     return [
@@ -145,6 +146,9 @@ async def agenerate_answer(
     """Native async variant of `generate_answer`."""
     try:
         response = await _agenerate_answer_call(query, docs)
+        from core.token_telemetry import record_llm_usage
+
+        record_llm_usage("fiqh_generator", response)
         return _post_process_answer(response.content.strip(), docs, is_sufficient)
     except Exception:
         logger.error(

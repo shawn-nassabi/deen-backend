@@ -12,8 +12,10 @@ def make_cached_system_message(text: str) -> SystemMessage:
     through LangChain's Anthropic integration.
 
     The cache_control breakpoint tells Anthropic to cache everything up to and including
-    this message as a single prefix (tools + system prompt). Requires combined token
-    count >= 2048 for claude-sonnet-4-6.
+    this message as a single prefix (tools + system prompt). Minimum cacheable prefix
+    for claude-sonnet-4-6 is 1024 tokens per current Anthropic docs (the old 2048 note
+    here was stale) — treat runtime `cache_creation_input_tokens > 0` as ground truth.
+    Prefixes below the minimum silently don't cache.
     """
     return SystemMessage(content=[
         {
@@ -24,12 +26,12 @@ def make_cached_system_message(text: str) -> SystemMessage:
     ])
 
 
-# DEE-51: explicit retry + timeout config across every ChatAnthropic.
-# langchain-anthropic defaults to max_retries=2 with no app-level timeout —
-# too tight for production overload spikes (529 / 503 / 429). 5 retries with
-# a 60s per-request timeout absorbs typical transient incidents within the
-# SSE no-proxy-timeout budget.
-_ANTHROPIC_MAX_RETRIES = 5
+# DEE-51 set max_retries=5 for overload spikes; token-cost DEE-60 Phase 4
+# flattens the retry stack: every call site is ALSO wrapped in
+# @anthropic_retry (2 outer attempts), so SDK-level 2 x outer 2 = up to 6
+# billed HTTP attempts per logical call under 429/529 — resilient without the
+# previous 18-attempt worst case.
+_ANTHROPIC_MAX_RETRIES = 2
 _ANTHROPIC_TIMEOUT_S = 60
 
 

@@ -7,6 +7,7 @@ Shia hadith, Sunni hadith, and Quran/Tafsir evidence per query.
 
 import asyncio
 import json
+import os
 from typing import Any, Dict, List, Literal
 
 from langchain_anthropic import ChatAnthropic
@@ -23,7 +24,6 @@ from agents.prompts.agent_prompts import (
 )
 from agents.state.chat_state import ChatState
 from agents.tools import (
-    check_if_non_islamic_tool,
     enhance_query_tool,
     retrieve_quran_tafsir_tool,
     retrieve_shia_documents_tool,
@@ -31,11 +31,13 @@ from agents.tools import (
     translate_to_english_tool,
 )
 from agents.tools.retrieval_tools import retrieve_quran_tafsir_tool_cached
+from core import prompt_templates
 from core import utils
 from core.config import ANTHROPIC_API_KEY
 import logging
 from core.context import correlation_id as correlation_id_ctx
 from core.chat_models import make_cached_system_message
+from core.token_telemetry import record_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +50,38 @@ async def _retry_ainvoke(llm, messages):
     return await llm.ainvoke(messages)
 
 
+def _clamp_doc_count(value, lo: int, hi: int) -> int:
+    """Bound an agent-supplied num_documents to [lo, hi] (token-cost Phase 1).
+
+    The tool signatures accept bare ints and the LLM controls the value, so
+    without this an over-eager plan could request arbitrarily many documents.
+    Falls back to `lo` on non-numeric input.
+    """
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return lo
+
+
 class ChatAgent:
     """
     LangGraph-based agentic chat system for Islamic education.
     """
 
     def __init__(self, config: AgentConfig = None):
+        # INVARIANT (token-cost DEE-60 Phase 3): ChatAgent must be constructed
+        # PER REQUEST (core/pipeline_langgraph.py does this). The MemorySaver
+        # below is per-instance, and the AGENT_CACHE_V2 append-only message
+        # persistence relies on it — a cached/shared ChatAgent would leak one
+        # turn's iteration summaries into another via the checkpointer.
         self.config = config or DEFAULT_AGENT_CONFIG
+        # check_if_non_islamic_tool is deliberately NOT bound (token-cost
+        # Phase 1, DEE-60): intent classification already runs
+        # deterministically on every request in _fiqh_classification_node,
+        # so the agent-side tool was pure duplication — its schema cost
+        # ~1.3k chars on every agent call and each use re-ran the intent
+        # classifier a second time.
         self.tools = [
-            check_if_non_islamic_tool,
             translate_to_english_tool,
             enhance_query_tool,
             retrieve_shia_documents_tool,
@@ -74,13 +99,14 @@ class ChatAgent:
             api_key=ANTHROPIC_API_KEY,
             temperature=self.config.model.temperature,
             max_tokens=self.config.model.max_tokens,
-            max_retries=5,
+            # Token-cost DEE-60 Phase 4: SDK retries 5 -> 2 (calls are also
+            # wrapped in @anthropic_retry x2 => worst case 6 attempts, not 18).
+            max_retries=2,
             timeout=60,
         )
         # Build a bind_tools list with the last tool replaced by the cached Anthropic dict.
         # self.tools keeps callable objects for ToolNode; this list is only for bind_tools.
         bind_tools_list = [
-            check_if_non_islamic_tool,
             translate_to_english_tool,
             enhance_query_tool,
             retrieve_shia_documents_tool,
@@ -127,28 +153,50 @@ class ChatAgent:
         return workflow
 
     async def _fiqh_classification_node(self, state: ChatState) -> dict:
-        logger.debug("Fiqh classification started", extra={"correlation_id": correlation_id_ctx.get()})
+        # DEE-12: deterministic intent classification runs first so casual / non-Islamic
+        # messages route to the early-exit node reliably — not left to the agent's
+        # discretionary tool calls. Fiqh classification only runs for islamic intent.
+        logger.debug("Classification started", extra={"correlation_id": correlation_id_ctx.get()})
+        result: dict = {"classification_checked": True}
+
+        try:
+            from modules.classification.classifier import aclassify_intent
+
+            intent = await aclassify_intent(state["user_query"], state.get("session_id"))
+            result["is_non_islamic"] = intent == "non_islamic"
+            result["is_casual"] = intent == "casual"
+            logger.debug("Intent classification complete", extra={"correlation_id": correlation_id_ctx.get(), "intent": intent})
+        except Exception as exc:
+            logger.error("Intent classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+            result["is_non_islamic"] = False
+            result["is_casual"] = False
+
+        # Casual / non-Islamic messages exit before retrieval — skip fiqh classification.
+        if result["is_non_islamic"] or result["is_casual"]:
+            result["fiqh_category"] = ""
+            result["is_fiqh"] = False
+            return result
+
         try:
             from modules.fiqh.classifier import aclassify_fiqh_query
 
             category = await aclassify_fiqh_query(state["user_query"])
-            is_fiqh = category.startswith("VALID_")
-            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": is_fiqh})
-            return {
-                "fiqh_category": category,
-                "is_fiqh": is_fiqh,
-                "classification_checked": True,
-            }
+            result["fiqh_category"] = category
+            result["is_fiqh"] = category.startswith("VALID_")
+            logger.debug("Fiqh classification complete", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category, "is_fiqh": result["is_fiqh"]})
         except Exception as exc:
             logger.error("Fiqh classification error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
-            return {
-                "fiqh_category": "",
-                "is_fiqh": False,
-                "classification_checked": True,
-                "errors": state.get("errors", []) + [f"Fiqh classification error: {str(exc)}"],
-            }
+            result["fiqh_category"] = ""
+            result["is_fiqh"] = False
+            result["errors"] = state.get("errors", []) + [f"Fiqh classification error: {str(exc)}"]
+
+        return result
 
     def _route_after_fiqh_check(self, state: ChatState) -> Literal["fiqh", "exit", "continue"]:
+        # DEE-12: casual / non-Islamic intent exits deterministically before retrieval.
+        if state.get("is_casual") or state.get("is_non_islamic"):
+            logger.debug("Routing to early exit: casual/non-Islamic intent", extra={"correlation_id": correlation_id_ctx.get()})
+            return "exit"
         category = state.get("fiqh_category", "")
         if category in {"VALID_OBVIOUS", "VALID_SMALL", "VALID_LARGE", "VALID_REASONER"}:
             logger.debug("Routing to fiqh sub-graph", extra={"correlation_id": correlation_id_ctx.get(), "fiqh_category": category})
@@ -171,25 +219,51 @@ class ChatAgent:
             state["errors"].append(f"Max iterations ({self.config.max_iterations}) reached")
             return state
 
-        messages = list(state["messages"])
+        def _filter_spurious(msgs):
+            # D-08: filter spurious empty AIMessages emitted by Claude in tool-calling
+            # sequences. AIMessage(content="", tool_calls=[...]) is valid (Claude
+            # tool-call request) — preserved. Empty content with no tool_calls is
+            # spurious — filtered out.
+            return [
+                msg for msg in msgs
+                if not (
+                    isinstance(msg, AIMessage)
+                    and msg.content == ""
+                    and not getattr(msg, "tool_calls", None)
+                )
+            ]
 
-        # D-08: filter spurious empty AIMessages emitted by Claude in tool-calling sequences.
-        # AIMessage(content="", tool_calls=[...]) is valid (Claude tool-call request) — preserved.
-        # AIMessage(content="", tool_calls=None/[]) with no tool_calls is spurious — filtered out.
-        messages = [
-            msg for msg in messages
-            if not (
-                isinstance(msg, AIMessage)
-                and msg.content == ""
-                and not getattr(msg, "tool_calls", None)
+        if os.getenv("AGENT_CACHE_V2", "1") != "0":
+            # Token-cost DEE-60 Phase 3: append-only prompt construction.
+            # The human turn (initial message on iteration 1, iteration
+            # summary afterwards) is PERSISTED into state so iteration N+1's
+            # rendered request is an exact byte-prefix extension of iteration
+            # N's; the system prompt is sent on EVERY iteration
+            # (byte-identical — previously iteration >= 2 sent no system at
+            # all, forfeiting the tools+system cache prefix). A rolling
+            # cache_control breakpoint rides the newest human message; older
+            # markers are swept to respect Anthropic's 4-breakpoint budget
+            # (tools + system + newest message = 3 used).
+            self._sweep_cache_markers(state["messages"])
+            human_text = (
+                self._build_initial_user_message(state)
+                if state["iterations"] == 1
+                else self._build_iteration_summary(state)
             )
-        ]
-
-        if state["iterations"] == 1:
+            state["messages"].append(HumanMessage(content=[
+                {"type": "text", "text": human_text, "cache_control": {"type": "ephemeral"}}
+            ]))
+            messages = _filter_spurious(list(state["messages"]))
             messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
-            messages.append(HumanMessage(content=self._build_initial_user_message(state)))
         else:
-            messages.append(HumanMessage(content=self._build_iteration_summary(state)))
+            # Legacy (AGENT_CACHE_V2=0): human turns stay local to this call;
+            # system prompt only on iteration 1.
+            messages = _filter_spurious(list(state["messages"]))
+            if state["iterations"] == 1:
+                messages.insert(0, make_cached_system_message(AGENT_SYSTEM_PROMPT))
+                messages.append(HumanMessage(content=self._build_initial_user_message(state)))
+            else:
+                messages.append(HumanMessage(content=self._build_iteration_summary(state)))
 
         try:
             response = await _retry_ainvoke(self.llm, messages)
@@ -199,6 +273,7 @@ class ChatAgent:
             _usage = (response.response_metadata or {}).get("usage", {})
             _cache_creation = _usage.get("cache_creation_input_tokens", 0) or 0
             _cache_read = _usage.get("cache_read_input_tokens", 0) or 0
+            record_llm_usage("agent", response)
             logger.debug(
                 "Agent LLM cache metrics",
                 extra={
@@ -246,11 +321,6 @@ class ChatAgent:
             result_data = self._parse_tool_payload(message.content)
             logger.debug("Tool executed", extra={"correlation_id": correlation_id_ctx.get(), "tool_name": tool_name})
 
-            if tool_name == "check_if_non_islamic_tool":
-                state["is_non_islamic"] = result_data.get("is_non_islamic", False)
-                state["classification_checked"] = True
-                continue
-
             if tool_name == "translate_to_english_tool":
                 translated_text = result_data.get("translated_text") or state["working_query"]
                 original_text = result_data.get("original_text") or state["working_query"]
@@ -275,33 +345,85 @@ class ChatAgent:
                 "retrieve_quran_tafsir_tool",
             }:
                 self._record_retrieval_result(state, result_data, tool_name)
+                # Token-cost DEE-60 Phase 2: full docs are now in state
+                # (retrieved_docs / quran_docs — the generation step's only
+                # source); rewrite the ToolMessage the PLANNER sees to a
+                # compact view before it enters state["messages"] and gets
+                # re-sent on every subsequent agent iteration.
+                self._compact_tool_message(message, result_data)
 
         if result_messages:
             state["messages"].extend(result_messages)
         return state
+
+    @staticmethod
+    def _sweep_cache_markers(messages) -> None:
+        """Strip cache_control from previously persisted message blocks so at
+        most one messages-tier breakpoint (the newest human message) exists
+        per request (token-cost DEE-60 Phase 3). Only touches block-form
+        content we created; plain-string history and ToolMessages pass by."""
+        for msg in messages:
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+
+    @staticmethod
+    def _compact_tool_message(message, result_data: Dict[str, Any]) -> None:
+        """Replace a retrieval ToolMessage's content with a compact planner
+        view: source, count, query, and per-doc id/title/snippet.
+
+        The planner only needs coverage + enough signal to judge evidence
+        sufficiency; the full texts (plus Arabic) were costing thousands of
+        re-sent tokens per iteration while generation never reads messages.
+        `ensure_ascii=False` avoids 6x \\uXXXX inflation on Arabic snippets.
+        Kill-switch: TOOLMSG_COMPACT=0 restores the raw payload.
+        """
+        if os.getenv("TOOLMSG_COMPACT", "1") == "0":
+            return
+        docs = result_data.get("documents", []) or []
+        compact_docs = []
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            md = doc.get("metadata", {}) or {}
+            compact_docs.append({
+                "id": doc.get("hadith_id") or doc.get("chunk_id"),
+                "title": md.get("book_title") or md.get("surah_name"),
+                "chapter": md.get("chapter_title") or md.get("verses_covered"),
+                "number": md.get("hadith_no"),
+                "sect": md.get("sect"),
+                "snippet": (doc.get("page_content_en") or "")[:300],
+            })
+        payload = {
+            "source": result_data.get("source"),
+            "count": result_data.get("count", len(docs)),
+            "query_used": result_data.get("query_used"),
+            "documents": compact_docs,
+        }
+        if result_data.get("error"):
+            payload["error"] = result_data["error"]
+        message.content = json.dumps(payload, ensure_ascii=False)
 
     async def _generate_response_node(self, state: ChatState) -> ChatState:
         logger.debug("Generating final response", extra={"correlation_id": correlation_id_ctx.get()})
 
         all_docs = state["retrieved_docs"] + state.get("quran_docs", [])
         references = utils.compact_format_references(all_docs)
-        generation_messages = [
-            make_cached_system_message(AGENT_SYSTEM_PROMPT),
-            HumanMessage(
-                content=f"""User query: {state['user_query']}
-
-Retrieved references:
-{references}
-
-Generate a comprehensive, accurate response that directly addresses the user's question using the retrieved sources. Cite specific books, hadith numbers, and scholars when referencing the sources."""
-            ),
-        ]
+        generation_messages = prompt_templates.generator_messages(
+            query=state["user_query"],
+            references=references,
+            target_language=state["target_language"],
+        )
 
         try:
             from core.chat_models import get_generator_model
 
             llm = get_generator_model()
             response = await _retry_ainvoke(llm, generation_messages)
+            record_llm_usage("generation_nonstream", response)
             state["final_response"] = response.content
             state["response_generated"] = True
             logger.debug("Response generated", extra={"correlation_id": correlation_id_ctx.get(), "response_chars": len(response.content)})
@@ -314,14 +436,50 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     async def _check_early_exit_node(self, state: ChatState) -> dict:
         logger.debug("Check early exit node", extra={"correlation_id": correlation_id_ctx.get()})
-        from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC
+        from agents.prompts.agent_prompts import EARLY_EXIT_NON_ISLAMIC, EARLY_EXIT_CASUAL
 
+        # --- Casual branch (greetings, thanks, small talk) ---
+        if state.get("is_casual"):
+            try:
+                from core.chat_models import get_classifier_model
+                model = get_classifier_model()
+                prompt_text = (
+                    f"The user sent a casual or social message: '{state['user_query']}'\n\n"
+                    "Reply warmly and briefly (1 sentence). Invite them to ask about "
+                    "Twelver Shia Islam — theology, history, the Imams, the Quran, or practice. "
+                    "Do not fabricate any religious content. Do not use emojis."
+                )
+                from langchain_core.messages import HumanMessage
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                record_llm_usage("early_exit_casual", response)
+                msg = response.content.strip()
+            except Exception as exc:
+                logger.error("LLM casual reply error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+                msg = EARLY_EXIT_CASUAL
+            return {"final_response": msg, "early_exit_message": msg}
+
+        # --- Non-Islamic branch ---
         if state.get("is_non_islamic"):
-            return {
-                "final_response": EARLY_EXIT_NON_ISLAMIC,
-                "early_exit_message": EARLY_EXIT_NON_ISLAMIC,
-            }
+            try:
+                from core.chat_models import get_classifier_model
+                model = get_classifier_model()
+                prompt_text = (
+                    f"A user asked: '{state['user_query']}'\n\n"
+                    "This question is outside your scope — you specialize in Twelver Shia Islamic "
+                    "education. Warmly and briefly (1-2 sentences) let them know you focus on "
+                    "Islamic topics and invite an on-topic question. "
+                    "Do NOT answer the off-topic question. Do not use emojis."
+                )
+                from langchain_core.messages import HumanMessage
+                response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                record_llm_usage("early_exit_non_islamic", response)
+                msg = response.content.strip()
+            except Exception as exc:
+                logger.error("LLM non-Islamic rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
+                msg = EARLY_EXIT_NON_ISLAMIC
+            return {"final_response": msg, "early_exit_message": msg}
 
+        # --- Fiqh UNETHICAL branch (unchanged) ---
         category = state.get("fiqh_category", "")
         if category == "UNETHICAL":
             # LLM-generated personalized rejection message (D-12)
@@ -333,10 +491,11 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                     f"A user asked: '{state['user_query']}'\n\n"
                     "This question asks for a ruling on something harmful or unethical. "
                     "Politely decline to answer in 1-2 sentences, without judging the user. "
-                    "Do not provide any ruling."
+                    "Do not provide any ruling. Do not use emojis."
                 )
                 from langchain_core.messages import HumanMessage
                 response = await _retry_ainvoke(model, [HumanMessage(content=prompt_text)])
+                record_llm_usage("early_exit_unethical", response)
                 msg = response.content.strip()
             except Exception as exc:
                 logger.error("LLM rejection error", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
@@ -377,6 +536,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                 "iteration": 0,
                 "accumulated_docs": [],
                 "prior_queries": [],
+                "pending_queries": [],
                 "sea_result": None,
                 "verdict": "INSUFFICIENT",
                 "status_events": [],
@@ -405,11 +565,20 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
     async def _generate_fiqh_response_node(self, state: ChatState) -> dict:
         """
-        Non-streaming generation node for the fiqh path.
-        Uses fiqh-specific system prompt and formats filtered docs as numbered evidence.
-        The streaming path in pipeline_langgraph.py bypasses this node and streams
-        tokens directly — this node serves the non-streaming (invoke) path only.
+        Non-streaming generation node for the fiqh path — serves the
+        `ainvoke` (/chat/agentic) path only.
+
+        On the SSE path (`streaming_mode=True`) this node is a no-op:
+        core/pipeline_langgraph.py streams the fiqh generation itself from
+        the merged final state (fiqh_category + fiqh_filtered_docs). Before
+        the token-cost Phase 1 fix (DEE-60), this guard was missing AND the
+        pipeline kept only the last node delta, so this node's non-streamed
+        answer was what users received (as a single blob, with no
+        fiqh_references event ever emitted).
         """
+        if state.get("streaming_mode"):
+            logger.debug("Skipping fiqh generation node (streaming mode)", extra={"correlation_id": correlation_id_ctx.get()})
+            return {}
         logger.debug("Generating fiqh answer (non-streaming)", extra={"correlation_id": correlation_id_ctx.get()})
         from modules.fiqh.generator import (
             _build_messages,
@@ -438,6 +607,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
                 query=state["user_query"],
                 evidence=_format_evidence(docs),
             ))
+            record_llm_usage("fiqh_generation_nonstream", response)
             answer = response.content.strip()
             answer += _build_references_section(answer, docs)
             if not is_sufficient:
@@ -453,7 +623,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             }
 
     def _should_continue(self, state: ChatState) -> Literal["continue", "generate", "exit", "end"]:
-        if state.get("is_non_islamic") or state.get("is_fiqh"):
+        if state.get("is_non_islamic") or state.get("is_fiqh") or state.get("is_casual"):
             logger.debug("Routing: early exit", extra={"correlation_id": correlation_id_ctx.get()})
             return "exit"
 
@@ -545,10 +715,7 @@ Generate a comprehensive, accurate response that directly addresses the user's q
 
             tool_name = tool_call.get("name")
             args = tool_call.setdefault("args", {})
-            if tool_name == "check_if_non_islamic_tool":
-                args.setdefault("query", state["working_query"])
-                args.setdefault("session_id", state["runtime_session_id"])
-            elif tool_name == "translate_to_english_tool":
+            if tool_name == "translate_to_english_tool":
                 args.setdefault("text", state["working_query"])
             elif tool_name == "enhance_query_tool":
                 args.setdefault("query", state["working_query"])
@@ -556,12 +723,15 @@ Generate a comprehensive, accurate response that directly addresses the user's q
             elif tool_name == "retrieve_shia_documents_tool":
                 args.setdefault("query", state["working_query"])
                 args.setdefault("num_documents", retrieval_config.get("shia_doc_count", self.config.retrieval.shia_doc_count))
+                args["num_documents"] = _clamp_doc_count(args.get("num_documents"), 1, 10)
             elif tool_name == "retrieve_sunni_documents_tool":
                 args.setdefault("query", state["working_query"])
                 args.setdefault("num_documents", retrieval_config.get("sunni_doc_count", self.config.retrieval.sunni_doc_count))
+                args["num_documents"] = _clamp_doc_count(args.get("num_documents"), 0, 5)
             elif tool_name == "retrieve_quran_tafsir_tool":
                 args.setdefault("query", state["working_query"])
                 args.setdefault("num_documents", retrieval_config.get("quran_doc_count", self.config.retrieval.quran_doc_count))
+                args["num_documents"] = _clamp_doc_count(args.get("num_documents"), 0, 5)
 
     def _record_retrieval_result(self, state: ChatState, result_data: Dict[str, Any], tool_name: str) -> None:
         source = result_data.get("source") or tool_name.replace("retrieve_", "").replace("_tool", "")
@@ -671,12 +841,22 @@ Generate a comprehensive, accurate response that directly addresses the user's q
     @staticmethod
     async def _aload_runtime_messages(session_id: str):
         """Async-native runtime history load (DEE-43). Uses
-        `core.memory.amake_history` so Redis I/O doesn't block the event loop."""
+        `core.memory.amake_history` so Redis I/O doesn't block the event loop.
+
+        Token-cost DEE-60 Phase 2: the loaded window is budgeted (read-side
+        only — Redis still stores the full history) because these messages
+        seed state["messages"] and are re-sent on every agent iteration."""
         try:
+            from core.history_budget import AGENT_BUDGET, budget_messages
             from core.memory import amake_history
+            from services.summary_service import prepend_summary_if_truncated
 
             history = amake_history(session_id)
-            return await history.aget_messages()
+            messages = await history.aget_messages()
+            budgeted = budget_messages(messages, *AGENT_BUDGET)
+            # Phase 5 (DEE-60): long chats get a compact summary of the turns
+            # the budget dropped, so follow-ups keep distant context.
+            return await prepend_summary_if_truncated(session_id, messages, budgeted)
         except Exception as exc:
             logger.error("Failed to load runtime history", exc_info=True, extra={"correlation_id": correlation_id_ctx.get(), "error": str(exc)})
             return []
