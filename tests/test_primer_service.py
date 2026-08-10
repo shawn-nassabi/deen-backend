@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, MagicMock, AsyncMock, patch
 from sqlalchemy.orm import Session
 
+import services.primer_service as primer_service_module
 from services.primer_service import PrimerService
 from db.models.lessons import Lesson
 from db.models.personalized_primers import PersonalizedPrimer
@@ -546,6 +547,64 @@ class TestFallbackResponse:
         assert response["from_cache"] is False
         assert response["stale"] is False
         assert response["personalized_available"] is False
+
+
+# Test: Pooled connection released before LLM work (Sentry PYTHON-FASTAPI-2E)
+class TestPoolReleaseBeforeLLM:
+    """The sync pool is capped at size 2 + overflow 1 per worker (DEE-59), so
+    holding a session across LLM generation (tens of seconds) starves every
+    other sync route. These tests pin the fix: the session must be closed
+    before the first LLM token is requested."""
+
+    @pytest.mark.asyncio
+    async def test_stream_releases_session_before_llm_stream(
+        self, primer_service, mock_db, sample_lesson, sample_user_signals
+    ):
+        """_stream_bullets_with_llm closes the session before consuming the LLM stream"""
+        closed_before_llm = {}
+
+        async def fake_astream(messages):
+            closed_before_llm["value"] = mock_db.close.called
+            chunk = Mock()
+            chunk.content = '{"personalized_bullets": ["Bullet 1", "Bullet 2"]}'
+            yield chunk
+
+        with patch.object(primer_service, "_fetch_lesson_content", return_value=[]):
+            with patch.object(primer_service_module, "primers_model") as mock_model:
+                mock_model.astream = fake_astream
+                events = [
+                    event
+                    async for event in primer_service._stream_bullets_with_llm(
+                        sample_lesson, sample_user_signals
+                    )
+                ]
+
+        assert closed_before_llm["value"] is True
+        bullet_events = [e for e in events if e["type"] == "bullet"]
+        assert [e["content"] for e in bullet_events] == ["Bullet 1", "Bullet 2"]
+
+    @pytest.mark.asyncio
+    async def test_generate_releases_session_before_llm_call(
+        self, primer_service, mock_db, sample_lesson, sample_user_signals
+    ):
+        """_generate_bullets_with_llm closes the session before awaiting the LLM"""
+        closed_before_llm = {}
+
+        async def fake_ainvoke(messages):
+            closed_before_llm["value"] = mock_db.close.called
+            response = Mock()
+            response.content = '{"personalized_bullets": ["Bullet 1", "Bullet 2"]}'
+            return response
+
+        with patch.object(primer_service, "_fetch_lesson_content", return_value=[]):
+            with patch.object(primer_service_module, "primers_model") as mock_model:
+                mock_model.ainvoke = fake_ainvoke
+                bullets = await primer_service._generate_bullets_with_llm(
+                    sample_lesson, sample_user_signals
+                )
+
+        assert closed_before_llm["value"] is True
+        assert bullets == ["Bullet 1", "Bullet 2"]
 
 
 # Integration Test: Full Generation Flow
