@@ -790,6 +790,12 @@ class PrimerService:
 
         # Generate with LLM
         messages = primer_generation_messages(**prompt_inputs)
+        # All DB reads for this generation are done. Release the pooled
+        # connection before the long LLM call so concurrent primer requests
+        # don't starve the size-2+1 sync pool (same rule as the hikmah quiz
+        # memory path in services/hikmah_quiz_service.py). The session stays
+        # usable — _cache_primer re-acquires a connection for the short write.
+        self.db.close()
         # model = get_enhancer_model()
         # response = await model.ainvoke(messages)
         response = await primers_model.ainvoke(messages)
@@ -857,6 +863,12 @@ class PrimerService:
 
         # Generate with streaming LLM - stream tokens in real-time
         messages = primer_generation_messages(**prompt_inputs)
+        # All DB reads for this generation are done. Release the pooled
+        # connection before the LLM stream (tens of seconds) so concurrent
+        # primer streams don't pin the entire size-2+1 sync pool and starve
+        # other sync routes (hikmah trees, quiz-submit). The session stays
+        # usable — _cache_primer re-acquires a connection for the short write.
+        self.db.close()
         # model = get_enhancer_model()
 
         # Stream the response and send chunks immediately

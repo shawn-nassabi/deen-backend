@@ -612,8 +612,8 @@ This creates `api.thedeenfoundation.com → your server`. Caddy auto-provisions 
 
 ```bash
 docker compose build --no-cache
+docker compose run --rm api alembic upgrade head   # migrations BEFORE first start
 docker compose up -d
-docker exec -it deen-backend alembic upgrade head
 ```
 
 </details>
