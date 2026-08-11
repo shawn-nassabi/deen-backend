@@ -258,7 +258,7 @@ docker logs --tail=200 deen-caddy
 
 ### Deployment Commands
 
-**Quick Reference** (also in README):
+**Quick Reference** (canonical copy in README — keep the two in sync):
 
 ```bash
 # Navigate to project
@@ -275,6 +275,12 @@ docker system prune -af
 
 # Rebuild with no cache
 docker compose build --no-cache
+
+# Run database migrations BEFORE starting the new version — new code must
+# never race a missing table (e.g. DEE-67's reference_translations).
+# Throwaway container from the freshly built image; no-op when there are
+# no new migrations.
+docker compose run --rm api alembic upgrade head
 
 # Start services
 docker compose up -d
@@ -331,18 +337,19 @@ DATABASE_URL=postgresql://user:password@rds-endpoint:5432/deen
 
 ### Running Migrations
 
+Migrations are part of every deploy (see Deployment Commands above) and must
+run **before** the new app version starts serving:
+
 ```bash
-# SSH into EC2
-ssh -i your-key.pem ubuntu@ec2-ip
+# Standard: throwaway container from the freshly built image
+docker compose run --rm api alembic upgrade head
+```
 
-# Enter backend container
-docker exec -it deen-backend bash
+To run them against an already-running container (ad-hoc, e.g. catching up
+after a deploy that skipped the step):
 
-# Run migrations
-alembic upgrade head
-
-# Exit container
-exit
+```bash
+docker exec -it deen-backend alembic upgrade head
 ```
 
 ### Database Backups
