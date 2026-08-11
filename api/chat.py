@@ -11,6 +11,7 @@ from core import pipeline
 from core import pipeline_langgraph
 from core.auth import auth
 from core.memory import make_history
+from core.rate_limit import enforce_chat_rate_limit
 from agents.config.agent_config import AgentConfig
 from services import chat_persistence_service
 import logging
@@ -35,7 +36,11 @@ def _require_user_id(credentials: JWTAuthorizationCredentials) -> str:
         raise HTTPException(status_code=403, detail="Invalid token: missing user identifier")
     return user_id
 
-@chat_router.post("/")
+# Abuse guard on the chat POST routes. Route-level dependencies resolve before
+# the endpoint's own parameters and in list order, so `auth` must be listed
+# first — it populates `request.state.user_id`, which the limiter keys on.
+# FastAPI caches it, so the JWT is still verified only once per request.
+@chat_router.post("/", dependencies=[Depends(auth), Depends(enforce_chat_rate_limit)])
 async def chat_pipeline_ep(
     request: ChatRequest,
     credentials: JWTAuthorizationCredentials = Depends(auth),
@@ -64,7 +69,7 @@ async def chat_pipeline_ep(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@chat_router.post("/stream")
+@chat_router.post("/stream", dependencies=[Depends(auth), Depends(enforce_chat_rate_limit)])
 async def chat_pipeline_stream_ep(
     request: ChatRequest,
     credentials: JWTAuthorizationCredentials = Depends(auth),
@@ -125,7 +130,10 @@ async def chat_pipeline_stream_ep(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@chat_router.post("/stream/agentic")
+@chat_router.post(
+    "/stream/agentic",
+    dependencies=[Depends(auth), Depends(enforce_chat_rate_limit)],
+)
 async def chat_pipeline_agentic_ep(
     request: ChatRequest,
     credentials: JWTAuthorizationCredentials = Depends(auth),
@@ -251,7 +259,7 @@ async def chat_pipeline_agentic_ep(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@chat_router.post("/agentic")
+@chat_router.post("/agentic", dependencies=[Depends(auth), Depends(enforce_chat_rate_limit)])
 async def chat_pipeline_agentic_non_stream_ep(
     request: ChatRequest,
     credentials: JWTAuthorizationCredentials = Depends(auth),
