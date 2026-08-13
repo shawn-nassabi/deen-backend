@@ -29,6 +29,20 @@ KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "dev:chat")
 # is a product decision, not a code one.
 TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "12000"))
 MAX_MESSAGES = int(os.getenv("REDIS_MAX_MESSAGES", "30"))
+
+
+def _require_env_int(name: str) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        raise ValueError(f"Missing required env var: {name}")
+    return int(raw)
+
+
+# Chat abuse rate limits — thresholds are env-only (never hardcoded in app logic).
+CHAT_RATE_LIMIT_SHORT_WINDOW_SECONDS = _require_env_int("CHAT_RATE_LIMIT_SHORT_WINDOW_SECONDS")
+CHAT_RATE_LIMIT_SHORT_MAX_REQUESTS = _require_env_int("CHAT_RATE_LIMIT_SHORT_MAX_REQUESTS")
+CHAT_RATE_LIMIT_LONG_WINDOW_SECONDS = _require_env_int("CHAT_RATE_LIMIT_LONG_WINDOW_SECONDS")
+CHAT_RATE_LIMIT_LONG_MAX_REQUESTS = _require_env_int("CHAT_RATE_LIMIT_LONG_MAX_REQUESTS")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 LARGE_LLM = os.getenv("LARGE_LLM", "claude-sonnet-4-6")

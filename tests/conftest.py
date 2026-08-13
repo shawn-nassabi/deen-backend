@@ -29,6 +29,10 @@ _TEST_ENV_DEFAULTS = {
     # Switch to fakeredis:// in Phase 4 once the async wrapper lands.
     "REDIS_URL": "redis://127.0.0.1:1/0",
     "REDIS_KEY_PREFIX": "test:chat",
+    "CHAT_RATE_LIMIT_SHORT_WINDOW_SECONDS": "60",
+    "CHAT_RATE_LIMIT_SHORT_MAX_REQUESTS": "10",
+    "CHAT_RATE_LIMIT_LONG_WINDOW_SECONDS": "300",
+    "CHAT_RATE_LIMIT_LONG_MAX_REQUESTS": "30",
     "ENV": "test",
     # db/config.py instantiates pydantic Settings() at import. The fields are
     # required, so provide test-only placeholders. No real DB is touched —
