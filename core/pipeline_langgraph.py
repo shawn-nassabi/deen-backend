@@ -101,6 +101,34 @@ TOOL_STATUS_MESSAGES = {
 VALID_FIQH_CATEGORIES = {"VALID_OBVIOUS", "VALID_SMALL", "VALID_LARGE", "VALID_REASONER"}
 
 
+def compute_effective_settings(effort_level: str, answer_length: str, is_fiqh: Optional[bool]) -> dict:
+    """DEE-61a/c: the four additive fields attached to every status,
+    response_end, error, and done SSE payload (and to the /chat/agentic
+    JSON body).
+
+    The fiqh subgraph is fixed at full depth (max 3 iterations) regardless
+    of effort_level/answer_length — DEE-61a is explicitly out of scope for
+    touching it — so a fiqh-routed request always reports the "high"/"long"
+    settings it actually ran with, plus why. `is_fiqh=None` means the fiqh
+    verdict isn't known yet (request terminated before/without
+    fiqh_classification completing); treated the same as `False` — echo
+    the requested values, unmodified.
+    """
+    if is_fiqh:
+        return {
+            "applied_effort_level": "high",
+            "applied_answer_length": "long",
+            "settings_overridden": True,
+            "override_reason": "fiqh",
+        }
+    return {
+        "applied_effort_level": effort_level,
+        "applied_answer_length": answer_length,
+        "settings_overridden": False,
+        "override_reason": None,
+    }
+
+
 def sse_event(event_type: str, data: dict) -> str:
     """Format a Server-Sent Event string.
 
@@ -181,7 +209,9 @@ async def chat_pipeline_streaming_agentic(
     user_query: str,
     session_id: str,
     target_language: str = "english",
-    config: Optional[AgentConfig] = None
+    config: Optional[AgentConfig] = None,
+    effort_level: str = "high",
+    answer_length: str = "long",
 ) -> StreamingResponse:
     """
     Agentic chat pipeline using LangGraph with proper SSE protocol.
@@ -232,6 +262,23 @@ async def chat_pipeline_streaming_agentic(
         state_box: dict = {"final_state": None, "exception": None}
         fiqh_realtime_count: dict = {"v": 0}
         fiqh_trail_emitted_box: dict = {"v": False}
+        # DEE-61c: set the moment fiqh_classification's node event arrives
+        # (True/False/None-if-not-yet-known). Read by _effective_settings()
+        # below so every status/response_end/error/done payload carries the
+        # correct applied_* fields as early as the verdict exists.
+        known_is_fiqh_box: dict = {"v": None}
+
+        def _effective_settings() -> dict:
+            return compute_effective_settings(effort_level, answer_length, known_is_fiqh_box["v"])
+
+        def _status_event(step: str, message: str) -> str:
+            return sse_event("status", {"step": step, "message": message, **_effective_settings()})
+
+        def _response_end_event() -> str:
+            return sse_event("response_end", _effective_settings())
+
+        def _done_event() -> str:
+            return sse_event("done", _effective_settings())
 
         # Sentinel marking producer completion (or failure).
         _AGENT_DONE = object()
@@ -248,10 +295,7 @@ async def chat_pipeline_streaming_agentic(
                 # shows feedback during the synchronous classify_fiqh_query()
                 # LLM call inside _fiqh_classification_node (otherwise the
                 # first ~2-4s would be silent).
-                await output_queue.put(sse_event(
-                    "status",
-                    {"step": "starting", "message": "Checking query classification..."},
-                ))
+                await output_queue.put(_status_event("starting", "Checking query classification..."))
 
                 emitted_tool_call_ids: set = set()
 
@@ -302,13 +346,11 @@ async def chat_pipeline_streaming_agentic(
                                     if isinstance(node_state, dict)
                                     else False
                                 )
+                                known_is_fiqh_box["v"] = bool(is_fiqh)
                                 if not is_fiqh:
                                     node_msg = None
                             if node_msg:
-                                await output_queue.put(sse_event(
-                                    "status",
-                                    {"step": node_name, "message": node_msg},
-                                ))
+                                await output_queue.put(_status_event(node_name, node_msg))
 
                         # Per-tool status events: emit only on the 'agent'
                         # node event, where the AIMessage with tool_calls is
@@ -332,10 +374,7 @@ async def chat_pipeline_streaming_agentic(
                                             tool_msg = TOOL_STATUS_MESSAGES.get(
                                                 tool_name, f"Running {tool_name}..."
                                             )
-                                            await output_queue.put(sse_event(
-                                                "status",
-                                                {"step": tool_name, "message": tool_msg},
-                                            ))
+                                            await output_queue.put(_status_event(tool_name, tool_msg))
 
                         # Fiqh sub-graph: real-time status events should have
                         # already been pushed by sub-graph nodes via the
@@ -360,10 +399,7 @@ async def chat_pipeline_streaming_agentic(
                                         step = ev.get("step")
                                         message = ev.get("message")
                                         if step and message:
-                                            await output_queue.put(sse_event(
-                                                "status",
-                                                {"step": step, "message": message},
-                                            ))
+                                            await output_queue.put(_status_event(step, message))
             except Exception as exc:
                 state_box["exception"] = exc
             finally:
@@ -383,10 +419,7 @@ async def chat_pipeline_streaming_agentic(
                     break
                 if isinstance(item, dict) and "step" in item and "message" in item:
                     fiqh_realtime_count["v"] += 1
-                    yield sse_event(
-                        "status",
-                        {"step": item["step"], "message": item["message"]},
-                    )
+                    yield _status_event(item["step"], item["message"])
                 elif isinstance(item, str):
                     yield item
                 else:
@@ -402,14 +435,18 @@ async def chat_pipeline_streaming_agentic(
 
             final_state = state_box["final_state"]
             fiqh_trail_emitted = fiqh_trail_emitted_box["v"]
+            # Safety backfill: normally set the moment the fiqh_classification
+            # node event arrives, but cover any path where that never fired.
+            if known_is_fiqh_box["v"] is None and isinstance(final_state, dict) and "is_fiqh" in final_state:
+                known_is_fiqh_box["v"] = bool(final_state.get("is_fiqh"))
 
             if final_state is None:
-                yield sse_event("error", {"message": "No response generated."})
+                yield sse_event("error", {"message": "No response generated.", **_effective_settings()})
                 _emit_cache_metrics_breadcrumb(final_state)
                 usage_evt = _maybe_usage_sse()
                 if usage_evt:
                     yield usage_evt
-                yield sse_event("done", {})
+                yield _done_event()
                 return
 
             runtime_session_id = final_state.get("runtime_session_id", session_id)
@@ -418,7 +455,7 @@ async def chat_pipeline_streaming_agentic(
             if final_state.get("early_exit_message"):
                 assistant_text = final_state["early_exit_message"]
                 yield sse_event("response_chunk", {"token": assistant_text})
-                yield sse_event("response_end", {})
+                yield _response_end_event()
                 from services import chat_persistence_service
 
                 await chat_persistence_service.aappend_turn_to_runtime_history(
@@ -431,7 +468,7 @@ async def chat_pipeline_streaming_agentic(
                 usage_evt = _maybe_usage_sse()
                 if usage_evt:
                     yield usage_evt
-                yield sse_event("done", {})
+                yield _done_event()
                 return
 
             # --- Fiqh FAIR-RAG streaming path ---
@@ -459,9 +496,9 @@ async def chat_pipeline_streaming_agentic(
                         ("fiqh_assess", "Assessing evidence sufficiency..."),
                     ]
                     for stage_step, stage_msg in fiqh_stages:
-                        yield sse_event("status", {"step": stage_step, "message": stage_msg})
+                        yield _status_event(stage_step, stage_msg)
 
-                yield sse_event("status", {"step": "generate_fiqh_response", "message": "Preparing fiqh answer..."})
+                yield _status_event("generate_fiqh_response", "Preparing fiqh answer...")
 
                 fiqh_docs = final_state.get("fiqh_filtered_docs", [])
                 sea_result = final_state.get("fiqh_sea_result")
@@ -476,7 +513,7 @@ async def chat_pipeline_streaming_agentic(
                     )
                     assistant_text = fallback
                     yield sse_event("response_chunk", {"token": fallback})
-                    yield sse_event("response_end", {})
+                    yield _response_end_event()
                 else:
                     # Stream fiqh answer token-by-token using fiqh-specific prompt (D-06)
                     model = chat_models.get_generator_model()
@@ -513,7 +550,7 @@ async def chat_pipeline_streaming_agentic(
                     answer_text += FATWA_DISCLAIMER
 
                     assistant_text = answer_text
-                    yield sse_event("response_end", {})
+                    yield _response_end_event()
 
                 # Persist fiqh answer to conversation history
                 if assistant_text and not history_written:
@@ -540,12 +577,12 @@ async def chat_pipeline_streaming_agentic(
                     if final_state.get("final_response"):
                         assistant_text = final_state["final_response"]
                         yield sse_event("response_chunk", {"token": assistant_text})
-                        yield sse_event("response_end", {})
+                        yield _response_end_event()
                     else:
                         from core import chat_models, prompt_templates
                         from core.memory import amake_history
 
-                        yield sse_event("status", {"step": "generate_response", "message": "Preparing answer..."})
+                        yield _status_event("generate_response", "Preparing answer...")
 
                         references = utils.compact_format_references(all_docs)
                         chat_model = chat_models.get_generator_model()
@@ -575,7 +612,7 @@ async def chat_pipeline_streaming_agentic(
                         usage_tracker.commit()
 
                         assistant_text = "".join(response_tokens).strip()
-                        yield sse_event("response_end", {})
+                        yield _response_end_event()
                 else:
                     errors = final_state.get("errors", []) if isinstance(final_state, dict) else []
                     if any("quran_tafsir retrieval error" in error for error in errors):
@@ -585,7 +622,7 @@ async def chat_pipeline_streaming_agentic(
                     else:
                         assistant_text = "I apologize, but I couldn't retrieve enough information to answer your question."
                     yield sse_event("response_chunk", {"token": assistant_text})
-                    yield sse_event("response_end", {})
+                    yield _response_end_event()
 
                 if assistant_text and not history_written:
                     from services import chat_persistence_service
@@ -609,7 +646,7 @@ async def chat_pipeline_streaming_agentic(
             usage_evt = _maybe_usage_sse()
             if usage_evt:
                 yield usage_evt
-            yield sse_event("done", {})
+            yield _done_event()
 
         except asyncio.CancelledError:
             # SSE client disconnect: Starlette cancels the StreamingResponse task
@@ -655,14 +692,18 @@ async def chat_pipeline_streaming_agentic(
                 yield sse_event("error", {
                     "message": "Our AI service is temporarily busy. Please try again in a moment.",
                     "retry": True,
+                    **_effective_settings(),
                 })
             else:
-                yield sse_event("error", {"message": "An error occurred. Please try again."})
+                yield sse_event("error", {
+                    "message": "An error occurred. Please try again.",
+                    **_effective_settings(),
+                })
             _emit_cache_metrics_breadcrumb(final_state)
             usage_evt = _maybe_usage_sse()
             if usage_evt:
                 yield usage_evt
-            yield sse_event("done", {})
+            yield _done_event()
         finally:
             # Always release the contextvar so a later request on this asyncio
             # task chain can't accidentally inherit a closed queue. The
@@ -682,7 +723,9 @@ async def chat_pipeline_agentic(
     user_query: str,
     session_id: str,
     target_language: str = "english",
-    config: Optional[AgentConfig] = None
+    config: Optional[AgentConfig] = None,
+    effort_level: str = "high",
+    answer_length: str = "long",
 ) -> dict:
     """
     Non-streaming agentic chat pipeline.
@@ -692,6 +735,9 @@ async def chat_pipeline_agentic(
         session_id: Session identifier
         target_language: User's preferred language
         config: Optional AgentConfig for customization
+        effort_level: DEE-61a signalling only; echoed/overridden in the
+            response body via compute_effective_settings.
+        answer_length: DEE-61c signalling only; same as above.
 
     Returns:
         Dictionary with response and metadata
@@ -736,5 +782,11 @@ async def chat_pipeline_agentic(
     }
     if token_usage_by_site:
         response_data["metadata"]["token_usage_by_site"] = token_usage_by_site
+
+    # DEE-61a/c: same four fields as the SSE contract, top-level to mirror
+    # the SSE payload shape (not nested under metadata).
+    response_data.update(
+        compute_effective_settings(effort_level, answer_length, final_state.get("is_fiqh"))
+    )
 
     return response_data
