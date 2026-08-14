@@ -12,7 +12,7 @@ from core import pipeline_langgraph
 from core.auth import auth
 from core.memory import make_history
 from core.rate_limit import enforce_chat_rate_limit
-from agents.config.agent_config import AgentConfig
+from agents.config.agent_config import resolve_agent_config
 from services import chat_persistence_service
 import logging
 from core.context import correlation_id as correlation_id_ctx
@@ -149,7 +149,10 @@ async def chat_pipeline_agentic_ep(
         "user_query": "What does Islam say about justice?",
         "session_id": "user42:thread-7",
         "language": "english",
-        "config": {  // Optional configuration
+        "effort_level": "high",   // Optional: "high" (default) | "quick"
+        "answer_length": "long",  // Optional: "long" (default) | "short" — signalling only, DEE-61b
+        "config": {  // Optional configuration; any field here overrides the
+                     // effort_level-derived value for that field
           "retrieval": {
             "shia_doc_count": 5,
             "sunni_doc_count": 2
@@ -161,9 +164,12 @@ async def chat_pipeline_agentic_ep(
           "max_iterations": 3
         }
       }
-    
+
     Returns:
-      Streaming response with AI-generated answer and references
+      Streaming response with AI-generated answer and references. The
+      `status` (at/after fiqh classification), `response_end`, `error`, and
+      `done` events additionally carry applied_effort_level,
+      applied_answer_length, settings_overridden, and override_reason.
     """
     corr_id = correlation_id_ctx.get()
     user_query = (request.user_query or "").strip()
@@ -203,27 +209,18 @@ async def chat_pipeline_agentic_ep(
                 user_query=user_query,
             )
 
-        # Parse config if provided
-        agent_config = None
-        if config_dict:
-            try:
-                agent_config = AgentConfig.from_dict(config_dict)
-            except Exception as e:
-                logger.warning(
-                    "Config parse error, using default config",
-                    extra={
-                        "correlation_id": corr_id,
-                        "session_id": session_id,
-                        "endpoint": "/chat/stream/agentic",
-                    },
-                )
+        # DEE-61a: effort_level + explicit config merge lives in one place
+        # (resolve_agent_config) so both agentic routes share it.
+        agent_config = resolve_agent_config(request.effort_level, config_dict)
 
         # Returns a StreamingResponse from the agentic pipeline
         response = await pipeline_langgraph.chat_pipeline_streaming_agentic(
             user_query=user_query,
             session_id=runtime_session_id,
             target_language=target_language,
-            config=agent_config
+            config=agent_config,
+            effort_level=request.effort_level,
+            answer_length=request.answer_length,
         )
 
         logger.info(
@@ -296,27 +293,16 @@ async def chat_pipeline_agentic_non_stream_ep(
     )
 
     try:
-        # Parse config if provided
-        agent_config = None
-        if config_dict:
-            try:
-                agent_config = AgentConfig.from_dict(config_dict)
-            except Exception as e:
-                logger.warning(
-                    "Config parse error, using default config",
-                    extra={
-                        "correlation_id": corr_id,
-                        "session_id": session_id,
-                        "endpoint": "/chat/agentic",
-                    },
-                )
+        agent_config = resolve_agent_config(request.effort_level, config_dict)
 
         # Get response from agentic pipeline (async since DEE-41)
         result = await pipeline_langgraph.chat_pipeline_agentic(
             user_query=user_query,
             session_id=session_id,
             target_language=target_language,
-            config=agent_config
+            config=agent_config,
+            effort_level=request.effort_level,
+            answer_length=request.answer_length,
         )
 
         logger.info(

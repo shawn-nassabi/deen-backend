@@ -83,7 +83,7 @@ class ChatAgent:
         # classifier a second time.
         self.tools = [
             translate_to_english_tool,
-            enhance_query_tool,
+            *([enhance_query_tool] if self.config.enable_enhancement else []),
             retrieve_shia_documents_tool,
             retrieve_sunni_documents_tool,
             retrieve_quran_tafsir_tool,
@@ -108,7 +108,7 @@ class ChatAgent:
         # self.tools keeps callable objects for ToolNode; this list is only for bind_tools.
         bind_tools_list = [
             translate_to_english_tool,
-            enhance_query_tool,
+            *([enhance_query_tool] if self.config.enable_enhancement else []),
             retrieve_shia_documents_tool,
             retrieve_sunni_documents_tool,
             retrieve_quran_tafsir_tool_cached,
