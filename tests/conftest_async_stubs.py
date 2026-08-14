@@ -332,15 +332,27 @@ async def run_pipeline_once(
     *,
     user_query: str = "What does Islam say about patience?",
     session_id: str = "stub-session",
+    config: Optional[Any] = None,
+    effort_level: str = "high",
+    answer_length: str = "long",
 ) -> tuple[float, List[str]]:
     """Run a single agentic streaming call against the in-process pipeline and
-    return (elapsed_seconds, raw_sse_chunks). Stubs MUST be installed first."""
+    return (elapsed_seconds, raw_sse_chunks). Stubs MUST be installed first.
+
+    DEE-61a/c: `config`/`effort_level`/`answer_length` are optional kwargs
+    (defaults reproduce every pre-existing call site's behaviour) so callers
+    can exercise the effort_level/answer_length contract against the same
+    deterministic stubs the concurrency/SSE-order tests already use.
+    """
     from core import pipeline_langgraph
 
     started = time.perf_counter()
     response = await pipeline_langgraph.chat_pipeline_streaming_agentic(
         user_query=user_query,
         session_id=session_id,
+        config=config,
+        effort_level=effort_level,
+        answer_length=answer_length,
     )
     chunks = await _drain_pipeline_response(response)
     elapsed = time.perf_counter() - started
