@@ -8,6 +8,12 @@ class ChatRequest(BaseModel):
     session_id: str
     language: str
     config: Optional[Dict[str, Any]] = None  # Optional agent configuration for agentic endpoint
+    # DEE-61a: performance/quality tradeoff knobs for the agentic endpoints.
+    # Omitting both reproduces current ("high"/"long") behaviour exactly.
+    # An explicit `config` value always wins over the effort_level-derived
+    # defaults on any overlapping AgentConfig field.
+    effort_level: Literal["high", "quick"] = "high"
+    answer_length: Literal["long", "short"] = "long"
 
 
 class ElaborationRequest(BaseModel):
