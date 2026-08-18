@@ -16,15 +16,17 @@ Prod behaviour is unchanged by default: `HADITH_SPARSE_BACKEND` defaults to `tfi
 
 ## Which endpoints are affected
 
-Any route that calls `modules/retrieval/retriever.py` for Shia/Sunni hadith:
+Any route that reaches `modules/retrieval/retriever.py` for Shia/Sunni hadith (verified in `api/chat.py`, `api/reference.py`, `api/hikmah.py` — these use named routers such as `@chat_router.post`, not `@router.post`, so a bare `grep '@router.post'` in `api/` will miss them):
 
-| Endpoint | Path |
-|---|---|
-| Agentic chat (streaming) | `POST /chat/stream/agentic` |
-| Agentic chat | `POST /chat/agentic` |
-| Reference lookup | `POST /references` |
-| Legacy streaming chat | `POST /chat/stream` |
-| Hikmah elaboration | `POST /hikmah/elaborate` (Shia docs only) |
+| Endpoint | Path | Retrieval call site |
+|---|---|---|
+| Agentic chat (streaming) | `POST /chat/stream/agentic` | `retrieve_shia_documents_tool` / `retrieve_sunni_documents_tool` via LangGraph |
+| Agentic chat (non-streaming) | `POST /chat/agentic` | same agentic pipeline |
+| Reference lookup | `POST /references` | `aretrieve_shia_documents` / `aretrieve_sunni_documents` |
+| Legacy streaming chat | `POST /chat/stream` | `retrieve_shia_documents` / `retrieve_sunni_documents` |
+| Hikmah elaboration (streaming) | `POST /hikmah/elaborate/stream` | `aretrieve_shia_documents` (Shia only) |
+
+Legacy `POST /chat/` (non-streaming, `retrieve_documents`) also hits the sparse path but is low-traffic compared to the routes above.
 
 Deliberately **not** changed: Quran/Tafsir retrieval (`retrieve_quran_*`), fiqh subgraph, dense-only paths.
 
@@ -150,7 +152,7 @@ Existing vars unchanged: `DEEN_SPARSE_INDEX_NAME`, `DENSE_RESULT_WEIGHT` (0.8), 
 | `scripts/reindex_hadith_sparse.py` | **New.** Corpus enumeration, BM25 fit, namespace upsert |
 | `.gitignore` | Ignore `data/hadith_bm25_encoder.json`, `data/*.jsonl` |
 
-- **No new dependencies** — `pinecone-text` was already in `requirements.txt`.
+- **No new `requirements.txt` entries** — `pinecone-text==0.11.0` was already present (used by fiqh ingestion); this PR only adds a new import site in `embedder.py`.
 - **No database migrations.**
 
 ---
@@ -195,7 +197,7 @@ BM25 returns 4/5 results from al-Kafi book 2 ch. 47 vs 3/5, dropping an unrelate
 - **Eval harness** with a golden query set for recall@k across both backends — the actual quality evidence.
 - **Retune `DENSE_RESULT_WEIGHT` / `SPARSE_RESULT_WEIGHT`.** Currently 0.8 / 0.2, but those were tuned when sparse contributed nothing. Now that sparse actually counts, they need revisiting.
 - **`.env.example`** — document the three new env var names (no values).
-- **`main.py` startup warning** when `HADITH_SPARSE_BACKEND=bm25` and encoder file is missing (mirror fiqh's `_warn_if_fiqh_encoder_missing`).
+- **`main.py` startup warning** when `HADITH_SPARSE_BACKEND=bm25` and encoder file is missing (mirror fiqh's `_warn_if_fiqh_encoder_missing()` in `main.py`, already called at startup today).
 - **Unit tests** for encoder dispatch and `_extract_sparse_matches`.
 - **Docs refresh** — `documentation/AI_PIPELINE.md` and `PRODUCT_OVERVIEW.md` still describe TF-IDF-only sparse retrieval.
 - **Quran/tafsir path is still dense-only** — no sparse retrieval at all. Same treatment would likely help exact ayah references.
