@@ -1,7 +1,14 @@
 import asyncio
 import logging
 
-from core.config import DEEN_SPARSE_INDEX_NAME, DEEN_DENSE_INDEX_NAME, QURAN_DENSE_INDEX_NAME
+from core.config import (
+    DEEN_DENSE_INDEX_NAME,
+    DEEN_SPARSE_BM25_INDEX_NAME,
+    DEEN_SPARSE_BM25_NAMESPACE,
+    DEEN_SPARSE_INDEX_NAME,
+    HADITH_SPARSE_BACKEND,
+    QURAN_DENSE_INDEX_NAME,
+)
 import core.vectorstore as vectorstore_module
 from core.utils import decompress_text
 from core.resilience import pinecone_retry
@@ -19,6 +26,53 @@ def _require_index_name(index_name, env_var_name):
     return index_name
 
 
+def _hadith_sparse_index_name() -> str | None:
+    """Resolve the Pinecone sparse index for hadith retrieval (DEE-21).
+
+    When ``HADITH_SPARSE_BACKEND=bm25``, prefers ``DEEN_SPARSE_BM25_INDEX_NAME``
+    but falls back to ``DEEN_SPARSE_INDEX_NAME`` (same index, separate namespace).
+    Returns None only when both are unset.
+    """
+    if HADITH_SPARSE_BACKEND == "bm25":
+        if DEEN_SPARSE_BM25_INDEX_NAME and str(DEEN_SPARSE_BM25_INDEX_NAME).strip():
+            return DEEN_SPARSE_BM25_INDEX_NAME
+        if DEEN_SPARSE_INDEX_NAME and str(DEEN_SPARSE_INDEX_NAME).strip():
+            return DEEN_SPARSE_INDEX_NAME
+        return None
+    return DEEN_SPARSE_INDEX_NAME
+
+
+def _hadith_sparse_namespace() -> str:
+    """Namespace for hadith sparse queries — BM25 vectors live separately from TF-IDF."""
+    if HADITH_SPARSE_BACKEND == "bm25":
+        return DEEN_SPARSE_BM25_NAMESPACE
+    return "ns1"
+
+
+def _empty_sparse_results() -> dict:
+    """Sparse result shape consumed by ``reranker.rerank_documents``."""
+    return {"matches": []}
+
+
+def _sync_sparse_search(query: str, *, k: int, sect_filter: dict | None = None) -> dict:
+    """Run hadith sparse Pinecone query, or return empty matches when sparse is skipped."""
+    sparse_embedding = embedder.generate_hadith_sparse_embedding(query)
+    sparse_index_name = _hadith_sparse_index_name()
+    if sparse_embedding is None or sparse_index_name is None:
+        return _empty_sparse_results()
+
+    sparse_vectorstore = vectorstore_module._get_sparse_vectorstore(sparse_index_name)
+    query_kwargs: dict = {
+        "top_k": k,
+        "include_metadata": True,
+        "sparse_vector": sparse_embedding,
+        "namespace": _hadith_sparse_namespace(),
+    }
+    if sect_filter is not None:
+        query_kwargs["filter"] = sect_filter
+    return sparse_vectorstore.query(**query_kwargs)
+
+
 # --- Sync retrieval (kept for legacy callers) ------------------------------
 
 
@@ -27,14 +81,7 @@ def retrieve_documents(query, no_of_docs=10):
         dense_vectorstore = vectorstore_module._get_vectorstore(DEEN_DENSE_INDEX_NAME)
         dense_docs_and_score = dense_vectorstore.similarity_search_with_score(query, k=20)
 
-        sparse_embedding = embedder.generate_sparse_embedding(query)
-        spare_vectorstore = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
-        sparse_docs = spare_vectorstore.query(
-            top_k=20,
-            include_metadata=True,
-            sparse_vector=sparse_embedding,
-            namespace="ns1",
-        )
+        sparse_docs = _sync_sparse_search(query, k=20)
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
@@ -50,15 +97,7 @@ def retrieve_shia_documents(query, no_of_docs=10):
             query, filter={'sect': 'shia'}, k=no_of_docs
         )
 
-        sparse_embedding = embedder.generate_sparse_embedding(query)
-        spare_vectorstore = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
-        sparse_docs = spare_vectorstore.query(
-            top_k=no_of_docs,
-            include_metadata=True,
-            sparse_vector=sparse_embedding,
-            namespace="ns1",
-            filter={'sect': 'shia'},
-        )
+        sparse_docs = _sync_sparse_search(query, k=no_of_docs, sect_filter={'sect': 'shia'})
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
@@ -74,15 +113,7 @@ def retrieve_sunni_documents(query, no_of_docs=10):
             query, filter={'sect': 'sunni'}, k=no_of_docs
         )
 
-        sparse_embedding = embedder.generate_sparse_embedding(query)
-        spare_vectorstore = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
-        sparse_docs = spare_vectorstore.query(
-            top_k=no_of_docs,
-            include_metadata=True,
-            sparse_vector=sparse_embedding,
-            namespace="ns1",
-            filter={'sect': 'sunni'},
-        )
+        sparse_docs = _sync_sparse_search(query, k=no_of_docs, sect_filter={'sect': 'sunni'})
 
         result = reranker.rerank_documents(dense_docs_and_score, sparse_docs, no_of_docs)
         return result
@@ -159,8 +190,8 @@ def retrieve_quran_documents(query, no_of_docs=5):
 # Dense vectorstore search uses langchain-pinecone's native
 # asimilarity_search_with_score (HTTP I/O bound). Sparse Pinecone queries use
 # the v1 sync SDK; offloaded to a thread until a follow-up adopts
-# PineconeAsyncio. Reranking and sparse TF-IDF embedding are CPU-bound — they
-# stay in run_in_executor so they don't pin the event loop. Dense + sparse
+# PineconeAsyncio. Reranking and sparse encoding (TF-IDF / BM25) are CPU-bound —
+# they stay in run_in_executor so they don't pin the event loop. Dense + sparse
 # branches run concurrently via asyncio.gather.
 
 
@@ -174,15 +205,19 @@ async def _dense_search(index_name, query, *, k, sect_filter=None):
 
 
 @pinecone_retry
-async def _sparse_search(query, *, k, sect_filter=None, namespace="ns1"):
-    sparse_embedding = await asyncio.to_thread(embedder.generate_sparse_embedding, query)
-    sparse_index = vectorstore_module._get_sparse_vectorstore(DEEN_SPARSE_INDEX_NAME)
+async def _sparse_search(query, *, k, sect_filter=None):
+    sparse_embedding = await asyncio.to_thread(embedder.generate_hadith_sparse_embedding, query)
+    sparse_index_name = _hadith_sparse_index_name()
+    if sparse_embedding is None or sparse_index_name is None:
+        return _empty_sparse_results()
+
+    sparse_index = vectorstore_module._get_sparse_vectorstore(sparse_index_name)
     return await asyncio.to_thread(
         sparse_index.query,
         top_k=k,
         include_metadata=True,
         sparse_vector=sparse_embedding,
-        namespace=namespace,
+        namespace=_hadith_sparse_namespace(),
         **({"filter": sect_filter} if sect_filter is not None else {}),
     )
 

@@ -40,6 +40,24 @@ def _whitelist_metadata(md: dict) -> dict:
         return {}
     return {k: md[k] for k in HADITH_METADATA_WHITELIST if k in md}
 
+
+def _extract_sparse_matches(sparse_results):
+    """Normalize a Pinecone sparse query result to a list of mutable match dicts."""
+    if sparse_results is None:
+        return []
+    if isinstance(sparse_results, dict):
+        return sparse_results.get("matches", []) or []
+    # Pinecone SDK QueryResponse is NOT a dict — the previous isinstance(dict)
+    # guard silently dropped every real sparse hit (DEE-21).
+    to_dict = getattr(sparse_results, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict().get("matches", []) or []
+        except Exception:
+            logger.exception("[RERANK] sparse to_dict() failed; falling back to .matches")
+    return list(getattr(sparse_results, "matches", None) or [])
+
+
 def rerank_documents(dense_results, sparse_results, no_of_docs):
     """
     Merges and reranks documents based on their dense and sparse scores.
@@ -47,9 +65,7 @@ def rerank_documents(dense_results, sparse_results, no_of_docs):
     logger.info("INSIDE rerank_documents")
     try:
         dense_count = len(dense_results) if dense_results is not None else 0
-        sparse_matches = []
-        if isinstance(sparse_results, dict):
-            sparse_matches = sparse_results.get("matches", []) or []
+        sparse_matches = _extract_sparse_matches(sparse_results)
         logger.info("[RERANK] dense_count=%s sparse_count=%s", dense_count, len(sparse_matches))
 
         # Normalize dense and sparse scores in-place (defensive)

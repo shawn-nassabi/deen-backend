@@ -60,3 +60,6 @@ docs/
 # Fiqh ingestion artifacts (generated, not committed)
 data/*.json
 
+
+data/*.jsonl
+data/hadith_bm25_encoder.json

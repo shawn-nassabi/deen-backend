@@ -17,6 +17,18 @@ QURAN_DENSE_INDEX_NAME = os.getenv("QURAN_DENSE_INDEX_NAME")
 # No ValueError guard — absence should not block server startup; guard inside ingestion script only
 DEEN_FIQH_DENSE_INDEX_NAME = os.getenv("DEEN_FIQH_DENSE_INDEX_NAME")
 DEEN_FIQH_SPARSE_INDEX_NAME = os.getenv("DEEN_FIQH_SPARSE_INDEX_NAME")
+# Hadith sparse retrieval (DEE-21): "tfidf" (default, prod) or "bm25" (staging index).
+_HADITH_SPARSE_BACKEND_RAW = os.getenv("HADITH_SPARSE_BACKEND", "tfidf").strip().lower()
+if _HADITH_SPARSE_BACKEND_RAW not in ("tfidf", "bm25"):
+    raise ValueError(
+        f"Invalid HADITH_SPARSE_BACKEND={_HADITH_SPARSE_BACKEND_RAW!r}; "
+        "expected 'tfidf' or 'bm25'."
+    )
+HADITH_SPARSE_BACKEND = _HADITH_SPARSE_BACKEND_RAW
+# Staging sparse index populated with BM25 document vectors (reindex_hadith_sparse.py).
+# Optional when HADITH_SPARSE_BACKEND=bm25 — falls back to DEEN_SPARSE_INDEX_NAME.
+DEEN_SPARSE_BM25_INDEX_NAME = os.getenv("DEEN_SPARSE_BM25_INDEX_NAME")
+DEEN_SPARSE_BM25_NAMESPACE = os.getenv("DEEN_SPARSE_BM25_NAMESPACE", "bm25")
 DENSE_RESULT_WEIGHT = os.getenv("DENSE_RESULT_WEIGHT",0.8)
 SPARSE_RESULT_WEIGHT = os.getenv("SPARSE_RESULT_WEIGHT",0.2)
 REFERENCE_FETCH_COUNT = int(os.getenv("REFERENCE_FETCH_COUNT", 10))
