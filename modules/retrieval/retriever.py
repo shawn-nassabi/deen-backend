@@ -4,6 +4,7 @@ import logging
 from core.config import (
     DEEN_DENSE_INDEX_NAME,
     DEEN_SPARSE_BM25_INDEX_NAME,
+    DEEN_SPARSE_BM25_NAMESPACE,
     DEEN_SPARSE_INDEX_NAME,
     HADITH_SPARSE_BACKEND,
     QURAN_DENSE_INDEX_NAME,
@@ -28,18 +29,24 @@ def _require_index_name(index_name, env_var_name):
 def _hadith_sparse_index_name() -> str | None:
     """Resolve the Pinecone sparse index for hadith retrieval (DEE-21).
 
-    Returns None when ``HADITH_SPARSE_BACKEND=bm25`` but
-    ``DEEN_SPARSE_BM25_INDEX_NAME`` is unset — caller should skip sparse search.
+    When ``HADITH_SPARSE_BACKEND=bm25``, prefers ``DEEN_SPARSE_BM25_INDEX_NAME``
+    but falls back to ``DEEN_SPARSE_INDEX_NAME`` (same index, separate namespace).
+    Returns None only when both are unset.
     """
     if HADITH_SPARSE_BACKEND == "bm25":
-        if not DEEN_SPARSE_BM25_INDEX_NAME or not str(DEEN_SPARSE_BM25_INDEX_NAME).strip():
-            logger.error(
-                "HADITH_SPARSE_BACKEND=bm25 but DEEN_SPARSE_BM25_INDEX_NAME is not set — "
-                "sparse retrieval disabled for this request; using dense-only."
-            )
-            return None
-        return DEEN_SPARSE_BM25_INDEX_NAME
+        if DEEN_SPARSE_BM25_INDEX_NAME and str(DEEN_SPARSE_BM25_INDEX_NAME).strip():
+            return DEEN_SPARSE_BM25_INDEX_NAME
+        if DEEN_SPARSE_INDEX_NAME and str(DEEN_SPARSE_INDEX_NAME).strip():
+            return DEEN_SPARSE_INDEX_NAME
+        return None
     return DEEN_SPARSE_INDEX_NAME
+
+
+def _hadith_sparse_namespace() -> str:
+    """Namespace for hadith sparse queries — BM25 vectors live separately from TF-IDF."""
+    if HADITH_SPARSE_BACKEND == "bm25":
+        return DEEN_SPARSE_BM25_NAMESPACE
+    return "ns1"
 
 
 def _empty_sparse_results() -> dict:
@@ -59,7 +66,7 @@ def _sync_sparse_search(query: str, *, k: int, sect_filter: dict | None = None) 
         "top_k": k,
         "include_metadata": True,
         "sparse_vector": sparse_embedding,
-        "namespace": "ns1",
+        "namespace": _hadith_sparse_namespace(),
     }
     if sect_filter is not None:
         query_kwargs["filter"] = sect_filter
@@ -198,7 +205,7 @@ async def _dense_search(index_name, query, *, k, sect_filter=None):
 
 
 @pinecone_retry
-async def _sparse_search(query, *, k, sect_filter=None, namespace="ns1"):
+async def _sparse_search(query, *, k, sect_filter=None):
     sparse_embedding = await asyncio.to_thread(embedder.generate_hadith_sparse_embedding, query)
     sparse_index_name = _hadith_sparse_index_name()
     if sparse_embedding is None or sparse_index_name is None:
@@ -210,7 +217,7 @@ async def _sparse_search(query, *, k, sect_filter=None, namespace="ns1"):
         top_k=k,
         include_metadata=True,
         sparse_vector=sparse_embedding,
-        namespace=namespace,
+        namespace=_hadith_sparse_namespace(),
         **({"filter": sect_filter} if sect_filter is not None else {}),
     )
 

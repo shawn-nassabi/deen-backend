@@ -26,8 +26,9 @@ if _HADITH_SPARSE_BACKEND_RAW not in ("tfidf", "bm25"):
     )
 HADITH_SPARSE_BACKEND = _HADITH_SPARSE_BACKEND_RAW
 # Staging sparse index populated with BM25 document vectors (reindex_hadith_sparse.py).
-# Required when HADITH_SPARSE_BACKEND=bm25; unused when tfidf.
+# Optional when HADITH_SPARSE_BACKEND=bm25 — falls back to DEEN_SPARSE_INDEX_NAME.
 DEEN_SPARSE_BM25_INDEX_NAME = os.getenv("DEEN_SPARSE_BM25_INDEX_NAME")
+DEEN_SPARSE_BM25_NAMESPACE = os.getenv("DEEN_SPARSE_BM25_NAMESPACE", "bm25")
 DENSE_RESULT_WEIGHT = os.getenv("DENSE_RESULT_WEIGHT",0.8)
 SPARSE_RESULT_WEIGHT = os.getenv("SPARSE_RESULT_WEIGHT",0.2)
 REFERENCE_FETCH_COUNT = int(os.getenv("REFERENCE_FETCH_COUNT", 10))
