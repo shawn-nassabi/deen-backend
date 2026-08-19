@@ -11,6 +11,7 @@ from db.models.lesson_page_quiz_questions import LessonPageQuizQuestion
 from db.models.lesson_page_quiz_choices import LessonPageQuizChoice
 from db.models.lesson_page_quiz_attempts import LessonPageQuizAttempt
 from db.session import SessionLocal
+from services import lesson_translation_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +25,21 @@ class HikmahQuizService:
     # -----------------------------
     # Learner-facing retrieval APIs
     # -----------------------------
-    def get_questions_for_page(self, lesson_content_id: int) -> Dict[str, Any]:
+    def get_questions_for_page(
+        self, lesson_content_id: int, language: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Return active quiz questions for a lesson content page."""
         questions = self._list_questions_for_page_models(
             lesson_content_id=lesson_content_id,
             include_inactive=False,
         )
 
+        serialized = self._serialize_questions(questions, include_admin_fields=False)
+        self._apply_quiz_translations(serialized, language)
+
         return {
             "lesson_content_id": lesson_content_id,
-            "questions": self._serialize_questions(questions, include_admin_fields=False),
+            "questions": serialized,
         }
 
     # ---------------------
@@ -536,6 +542,49 @@ class HikmahQuizService:
             )
 
         return payload
+
+    def _apply_quiz_translations(
+        self,
+        serialized_questions: List[Dict[str, Any]],
+        language: Optional[str],
+    ) -> None:
+        """Overlay translated prompt/explanation/choice_text onto already-serialized
+        quiz question dicts, in place. No-op (zero lookup calls) when `language` is
+        empty/None/"english" or there are no questions -- mirrors
+        `lesson_translation_service.apply_translations`'s zero-added-DB-calls
+        guarantee. Missing translation rows leave the existing source value
+        untouched (EN/AR fallback)."""
+        normalized = (language or "").strip().lower()
+        if not normalized or normalized == "english" or not serialized_questions:
+            return
+
+        question_ids = [q["id"] for q in serialized_questions]
+        choice_ids = [c["id"] for q in serialized_questions for c in q["choices"]]
+
+        question_translations = lesson_translation_service.lookup_lesson_translations(
+            self.db, "quiz_question", question_ids, normalized, fields=["prompt", "explanation"]
+        )
+        choice_translations = (
+            lesson_translation_service.lookup_lesson_translations(
+                self.db, "quiz_choice", choice_ids, normalized, fields=["choice_text"]
+            )
+            if choice_ids
+            else {}
+        )
+
+        for question in serialized_questions:
+            translated_prompt = question_translations.get((question["id"], "prompt"))
+            if translated_prompt is not None:
+                question["prompt"] = translated_prompt
+
+            translated_explanation = question_translations.get((question["id"], "explanation"))
+            if translated_explanation is not None:
+                question["explanation"] = translated_explanation
+
+            for choice in question["choices"]:
+                translated_choice_text = choice_translations.get((choice["id"], "choice_text"))
+                if translated_choice_text is not None:
+                    choice["choice_text"] = translated_choice_text
 
     @staticmethod
     def _to_utc(value: Optional[datetime]) -> datetime:

@@ -97,12 +97,16 @@ async def get_page_quiz_questions(
     lesson_content_id: int,
     credentials: JWTAuthorizationCredentials = Depends(auth),
     db: Session = Depends(get_db),
+    language: str = Query(
+        "english",
+        description="Selected display language for learner-facing quiz content. Defaults to English.",
+    ),
 ):
     """Get all active multiple-choice quiz questions associated with a lesson page."""
     corr_id = correlation_id_ctx.get()
     try:
         service = HikmahQuizService(db)
-        return service.get_questions_for_page(lesson_content_id)
+        return service.get_questions_for_page(lesson_content_id, language=language)
     except LookupError:
         raise HTTPException(status_code=404, detail="Lesson content page not found")
     except Exception as e:
